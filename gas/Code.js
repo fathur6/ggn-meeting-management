@@ -4,7 +4,6 @@
  * ============================================================================
  */
 function onOpen() {
-  ensureMemberLifecycleColumns_();
   var ui = SpreadsheetApp.getUi();
   
   var menuUjian = ui.createMenu('Hantar Emel Jemputan (Ujian)')
@@ -20,6 +19,7 @@ function onOpen() {
 }
 
 function initializeMemberLifecycleColumns() {
+  requireMeetingAdmin_();
   ensureMemberLifecycleColumns_();
 }
 
@@ -37,44 +37,49 @@ function ensureMemberLifecycleColumns_() {
 }
 
 function hantarUjianJAPSU() {
-  prosesPenghantaranEmel("Ujian", "Mesyuarat JAPSU", "pps_japsu@unisza.edu.my", "Sekretariat JAPSU");
+  requireMeetingAdmin_();
+  prosesPenghantaranEmel_("Ujian", "Mesyuarat JAPSU", "pps_japsu@unisza.edu.my", "Sekretariat JAPSU");
 }
 
 function hantarUjianJKPS() {
-  prosesPenghantaranEmel("Ujian", "Mesyuarat JKPS", "pps_jkps@unisza.edu.my", "Sekretariat JKPS");
+  requireMeetingAdmin_();
+  prosesPenghantaranEmel_("Ujian", "Mesyuarat JKPS", "pps_jkps@unisza.edu.my", "Sekretariat JKPS");
 }
 
 function hantarEmelJAPSU() {
+  requireMeetingAdmin_();
   var ui = SpreadsheetApp.getUi();
   var response = ui.alert('Pengesahan Penghantaran', 'Adakah anda pasti untuk menghantar emel jemputan kepada semua Ahli JAPSU?', ui.ButtonSet.YES_NO);
   if (response == ui.Button.YES) {
-    prosesPenghantaranEmel("Ahli JAPSU", "Mesyuarat JAPSU", "pps_japsu@unisza.edu.my", "Sekretariat JAPSU");
+    prosesPenghantaranEmel_("Ahli JAPSU", "Mesyuarat JAPSU", "pps_japsu@unisza.edu.my", "Sekretariat JAPSU");
   }
 }
 
 function hantarEmelJKPS() {
+  requireMeetingAdmin_();
   var ui = SpreadsheetApp.getUi();
   var response = ui.alert('Pengesahan Penghantaran', 'Adakah anda pasti untuk menghantar emel jemputan kepada semua Ahli JKPS?', ui.ButtonSet.YES_NO);
   if (response == ui.Button.YES) {
-    prosesPenghantaranEmel("Ahli JKPS", "Mesyuarat JKPS", "pps_jkps@unisza.edu.my", "Sekretariat JKPS");
+    prosesPenghantaranEmel_("Ahli JKPS", "Mesyuarat JKPS", "pps_jkps@unisza.edu.my", "Sekretariat JKPS");
   }
 }
 
 // Digunakan oleh portal UGS selepas pengguna mengesahkan penghantaran.
 function sendInvitationFromPortal(committee, type) {
+  requireMeetingAdmin_();
   if (['JKPS', 'JAPSU'].indexOf(committee) === -1) throw new Error('Jawatankuasa tidak sah.');
   if (['Ujian', 'Hebahan'].indexOf(type) === -1) throw new Error('Jenis penghantaran tidak sah.');
   const sourceSheet = type === 'Ujian' ? 'Ujian' : 'Ahli ' + committee;
   const meetingSheet = 'Mesyuarat ' + committee;
   const senderEmail = committee === 'JKPS' ? 'pps_jkps@unisza.edu.my' : 'pps_japsu@unisza.edu.my';
-  const count = teraskanPenghantaranEmel(sourceSheet, meetingSheet, senderEmail, 'Sekretariat ' + committee);
+  const count = teraskanPenghantaranEmel_(sourceSheet, meetingSheet, senderEmail, 'Sekretariat ' + committee);
   return { committee: committee, type: type, count: count };
 }
 
 // Wrapper untuk paparan mesej Alert di dalam Google Sheet
-function prosesPenghantaranEmel(namaSheetSenarai, namaSheetMesyuarat, emelPengirim, namaPengirim) {
+function prosesPenghantaranEmel_(namaSheetSenarai, namaSheetMesyuarat, emelPengirim, namaPengirim) {
   try {
-    const count = teraskanPenghantaranEmel(namaSheetSenarai, namaSheetMesyuarat, emelPengirim, namaPengirim);
+    const count = teraskanPenghantaranEmel_(namaSheetSenarai, namaSheetMesyuarat, emelPengirim, namaPengirim);
     SpreadsheetApp.getUi().alert("Selesai! " + count + " emel telah berjaya dihantar untuk " + namaSheetMesyuarat + " melalui " + emelPengirim);
   } catch (error) {
     if(SpreadsheetApp.getUi) SpreadsheetApp.getUi().alert("Ralat: " + error.message);
@@ -86,8 +91,8 @@ function prosesPenghantaranEmel(namaSheetSenarai, namaSheetMesyuarat, emelPengir
  * BAHAGIAN 2: FUNGSI TERAS PENGHANTARAN EMEL & HTML EMEL
  * ============================================================================
  */
-function teraskanPenghantaranEmel(namaSheetSenarai, namaSheetMesyuarat, emelPengirim, namaPengirim) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+function teraskanPenghantaranEmel_(namaSheetSenarai, namaSheetMesyuarat, emelPengirim, namaPengirim) {
+  const ss = SpreadsheetApp.openById(CONFIG.spreadsheetId);
   
   const sheetMesyuarat = ss.getSheetByName(namaSheetMesyuarat);
   if (!sheetMesyuarat) throw new Error("Sheet '" + namaSheetMesyuarat + "' tidak ditemui.");
@@ -126,7 +131,7 @@ function teraskanPenghantaranEmel(namaSheetSenarai, namaSheetMesyuarat, emelPeng
         subject = "Perubahan Maklumat: " + subject;
       }
       
-      const htmlBody = binaHTMLEmel(nama, jawatan, fakulti, meetingData);
+      const htmlBody = binaHTMLEmel_(nama, jawatan, fakulti, meetingData);
       
       const options = { htmlBody: htmlBody, name: namaPengirim };
       // Gmail rejects an unverified From address; use it only when it is an alias of the deploying account.
@@ -142,7 +147,7 @@ function teraskanPenghantaranEmel(namaSheetSenarai, namaSheetMesyuarat, emelPeng
   return emelDihantar; // Pulangkan jumlah emel yang berjaya dihantar untuk log backend
 }
 
-function binaHTMLEmel(nama, jawatan, fakulti, meetingData) {
+function binaHTMLEmel_(nama, jawatan, fakulti, meetingData) {
   const logoUrl = "https://lh3.googleusercontent.com/d/159AA9PJ34xa18Z0a2cl_eBWxIV8yqwDc";
   
   const calTajuk = encodeURIComponent(meetingData.tajuk + " " + meetingData.bilangan);
@@ -238,14 +243,21 @@ function binaHTMLEmel(nama, jawatan, fakulti, meetingData) {
 
 // Menarik (GET) semua rekod ahli dan butiran mesyuarat ke Frontend
 function doGet(e) {
-  if (e && e.parameter && e.parameter.view === 'app') {
-    return HtmlService.createTemplateFromFile('Management')
-      .evaluate()
-      .setTitle('UGS Meeting Management')
-      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  const params = (e && e.parameter) || {};
+  if (params.view === 'edaran') return renderCirculationPage_(params.id);
+  let access;
+  try {
+    access = requireMeetingAdmin_();
+  } catch (error) {
+    if (params.view === 'app') return renderRestrictedMeetingPage_(error.message);
+    return createJsonResponse_({ success: false, error: error.message });
   }
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+  if (params.view === 'app') {
+    return HtmlService.createTemplateFromFile('Management').evaluate()
+      .setTitle('UGS Meeting Management').addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  }
+  const ss = access.book;
+
   const getMembers = (sheetName) => {
     const sheet = ss.getSheetByName(sheetName);
     if (!sheet) return [];
@@ -304,10 +316,14 @@ function doPost(e) {
   try {
     const payload = JSON.parse(e.postData.contents);
     const action = payload.action;
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-
     if (action === 'syncLiveAttendance') {
-      return createJsonResponse({ success: true, result: handleLiveAttendancePost_(payload) });
+      handleLiveAttendancePost_(payload);
+      return createJsonResponse_({ success: true });
+    }
+    const {book: ss} = requireMeetingAdmin_();
+    if ((payload.meeting && !['JKPS', 'JAPSU'].includes(payload.meeting))
+        || (payload.tab && !['JKPS', 'JAPSU'].includes(payload.tab))) {
+      throw new Error('Jawatankuasa tidak sah.');
     }
 
     // 1. KEMASKINI BUTIRAN MESYUARAT
@@ -324,7 +340,7 @@ function doPost(e) {
       sheet.getRange("B7").setValue(data.pautan);
       sheet.getRange("B8").setValue(data.dokumen);
 
-      return createJsonResponse({ success: true, message: "Butiran berjaya disimpan." });
+      return createJsonResponse_({ success: true, message: "Butiran berjaya disimpan." });
     }
 
     // 2. TAMBAH/KEMASKINI AHLI
@@ -363,7 +379,7 @@ function doPost(e) {
         const newId = data.length > 1 ? Math.max(...data.slice(1).map(r => parseInt(r[0]) || 0)) + 1 : 1;
         sheet.appendRow([newId, member.nama, member.jawatan, member.fakulti, member.emel, member.tarikhLantikan || '', member.tarikhTamat || '', member.statusKeahlian || 'Aktif']);
       }
-      return createJsonResponse({ success: true });
+      return createJsonResponse_({ success: true });
     }
 
     // 3. BUANG AHLI
@@ -380,7 +396,7 @@ function doPost(e) {
           break;
         }
       }
-      return createJsonResponse({ success: true });
+      return createJsonResponse_({ success: true });
     }
 
     // Arkib ahli supaya rekod pelantikan dan kehadiran sejarah tidak hilang.
@@ -393,7 +409,7 @@ function doPost(e) {
         if (data[i][0] == payload.id) {
           sheet.getRange(i + 1, 7).setValue(payload.tarikhTamat || new Date());
           sheet.getRange(i + 1, 8).setValue('Lepas');
-          return createJsonResponse({ success: true });
+          return createJsonResponse_({ success: true });
         }
       }
       throw new Error("Ahli tidak ditemui");
@@ -445,7 +461,7 @@ function doPost(e) {
         sheet.getRange(2, 1, newRows.length, newRows[0].length).setValues(newRows);
       }
 
-      return createJsonResponse({ success: true, message: "Susunan dikemaskini" });
+      return createJsonResponse_({ success: true, message: "Susunan dikemaskini" });
     }
 
     // 4. HANTAR EMEL DARI FRONTEND
@@ -458,18 +474,24 @@ function doPost(e) {
       const emelPengirim = meeting === 'JKPS' ? 'pps_jkps@unisza.edu.my' : 'pps_japsu@unisza.edu.my';
       const namaPengirim = 'Sekretariat ' + meeting;
 
-      const count = teraskanPenghantaranEmel(sheetSenarai, sheetMesyuarat, emelPengirim, namaPengirim);
-      return createJsonResponse({ success: true, count: count });
+      const count = teraskanPenghantaranEmel_(sheetSenarai, sheetMesyuarat, emelPengirim, namaPengirim);
+      return createJsonResponse_({ success: true, count: count });
     }
 
-    return createJsonResponse({ success: false, error: 'Tindakan tidak sah.' });
+    return createJsonResponse_({ success: false, error: 'Tindakan tidak sah.' });
 
   } catch (error) {
-    return createJsonResponse({ success: false, error: error.toString() });
+    return createJsonResponse_({ success: false, error: error.toString() });
   }
 }
 
 // Helper untuk format pulangan JSON ke HTML Frontend
-function createJsonResponse(obj) {
+function createJsonResponse_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+}
+
+function renderRestrictedMeetingPage_(message) {
+  const template = HtmlService.createTemplateFromFile('AccessDenied');
+  template.message = message || 'Gunakan pautan edaran yang dihantar oleh Urus Setia PPS.';
+  return template.evaluate().setTitle('Akses terhad').addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }

@@ -13,16 +13,23 @@ const CONFIG = {
 
 // Called by the existing API's doPost action `syncLiveAttendance`.
 function resolveLiveSyncToken_() {
-  return PropertiesService.getScriptProperties().getProperty(CONFIG.liveSyncTokenProperty) || '';
+  return PropertiesService.getScriptProperties().getProperty(CONFIG.liveSyncTokenProperty);
 }
 
 function handleLiveAttendancePost_(payload) {
-  if (payload.token !== resolveLiveSyncToken_()) throw new Error('Invalid live-sync token.');
+  const token = resolveLiveSyncToken_();
+  if (!token || payload.token !== token) throw new Error('Invalid live-sync token.');
+  meetingWorkbook_();
   return committeeForTracking_(payload.trackingId) === 'JAPSU' ? ingestJapsuLiveAttendance_(payload) : ingestLiveAttendance_(payload);
 }
 
 function getLiveTrackingDashboard(committee, meetingId) {
-  if (committee !== 'JAPSU') return enrichTrackingRows_(getDashboardData(meetingId), 'JKPS');
+  requireMeetingAdmin_();
+  return getLiveTrackingDashboard_(committee, meetingId);
+}
+
+function getLiveTrackingDashboard_(committee, meetingId) {
+  if (committee !== 'JAPSU') return enrichTrackingRows_(getDashboardData_(meetingId), 'JKPS');
   const ss = getSpreadsheet_();
   ensureSheet_(ss, 'JAPSU Live Meetings', ['Meeting ID', 'Title', 'Meeting Date', 'Created At', 'Eligible Members', 'Quorum Required']);
   ensureSheet_(ss, 'JAPSU Live Attendance', ['Meeting ID', 'Source Name', 'Source Faculty', 'Check-in Time', 'Match Type', 'Roster Name', 'Roster Email', 'Match Status', 'Synced At']);
@@ -54,7 +61,7 @@ function ingestJapsuLiveAttendance_(payload) {
     return [meeting['Meeting ID'], attendee.name || '', attendee.faculty || '', attendee.checkInTime || '', member ? 'Member name' : 'Unmatched', member ? member.name : '', member ? member.email : '', member ? 'Counted' : 'Review required', new Date()];
   });
   replaceMeetingAttendance_(ss.getSheetByName('JAPSU Live Attendance'), meeting['Meeting ID'], rows);
-  return getLiveTrackingDashboard('JAPSU', meeting['Meeting ID']);
+  return getLiveTrackingDashboard_('JAPSU', meeting['Meeting ID']);
 }
 
 function committeeForTracking_(trackingId) {
@@ -79,16 +86,22 @@ function enrichTrackingRows_(data, committee) {
 }
 
 function initializeApp() {
+  requireMeetingAdmin_();
   const ss = getSpreadsheet_();
   ensureSheet_(ss, CONFIG.sheets.meetings, ['Meeting ID', 'Title', 'Meeting Date', 'Created At', 'Created By', 'Eligible Members', 'Quorum Required']);
   ensureSheet_(ss, CONFIG.sheets.attendance, ['Meeting ID', 'Source Name', 'Source Faculty', 'Check-in Time', 'Match Type', 'Roster Name', 'Roster Email', 'Match Status', 'Synced At']);
   ensureSheet_(ss, CONFIG.sheets.representatives, ['eMeeting Faculty', 'Representing Member Email', 'Active']);
   ensureSheet_(ss, CONFIG.sheets.memberships, ['Member Email', 'Member Name', 'Membership Start', 'Membership End', 'Active']);
   ensureSheet_(ss, CONFIG.sheets.calls, ['Meeting ID', 'Member Email', 'Called On', 'Status']);
-  return getDashboardData();
+  return getDashboardData_();
 }
 
 function getDashboardData(meetingId) {
+  requireMeetingAdmin_();
+  return getDashboardData_(meetingId);
+}
+
+function getDashboardData_(meetingId) {
   const ss = getSpreadsheet_();
   const roster = readRoster_(ss);
   const meetings = readObjects_(ss, CONFIG.sheets.meetings).sort(function(a, b) {
@@ -122,14 +135,16 @@ function getDashboardData(meetingId) {
 }
 
 function createMeeting(data) {
+  requireMeetingAdmin_();
   if (!data || !String(data.title || '').trim() || !data.meetingDate) {
     throw new Error('A meeting title and date are required.');
   }
   const meeting = createMeetingRecord_(getSpreadsheet_(), String(data.title).trim(), new Date(data.meetingDate + 'T00:00:00'), Session.getActiveUser().getEmail());
-  return getDashboardData(meeting['Meeting ID']);
+  return getDashboardData_(meeting['Meeting ID']);
 }
 
 function setLiveSyncToken(token) {
+  requireMeetingAdmin_();
   if (!token || String(token).length < 24) throw new Error('Use a random token of at least 24 characters.');
   PropertiesService.getScriptProperties().setProperty(CONFIG.liveSyncTokenProperty, String(token));
 }
@@ -149,7 +164,7 @@ function ingestLiveAttendance_(payload) {
     ];
   });
   replaceMeetingAttendance_(ss.getSheetByName(CONFIG.sheets.attendance), meeting['Meeting ID'], rows);
-  return getDashboardData(meeting['Meeting ID']);
+  return getDashboardData_(meeting['Meeting ID']);
 }
 
 function resolveMeeting_(ss, payload) {
@@ -174,6 +189,7 @@ function createMeetingRecord_(ss, title, date, createdBy) {
 }
 
 function seedCurrentMemberships(startDate) {
+  requireMeetingAdmin_();
   const ss = getSpreadsheet_();
   const sheet = ss.getSheetByName(CONFIG.sheets.memberships);
   const existingEmails = readObjects_(ss, CONFIG.sheets.memberships).map(function(row) { return row['Member Email'].toLowerCase(); });
@@ -187,6 +203,7 @@ function seedCurrentMemberships(startDate) {
 }
 
 function getAnnualAttendanceReport(year) {
+  requireMeetingAdmin_();
   const reportYear = Number(year);
   if (!/^\d{4}$/.test(String(reportYear))) throw new Error('Choose a valid four-digit year.');
   const ss = getSpreadsheet_();
@@ -219,6 +236,7 @@ function getAnnualAttendanceReport(year) {
 }
 
 function getManagementOverview() {
+  requireMeetingAdmin_();
   const ss = getSpreadsheet_();
   const getCount = function(sheetName) {
     return readObjects_(ss, sheetName).filter(function(row) {
@@ -234,6 +252,7 @@ function getManagementOverview() {
 }
 
 function getCommitteeMembers(committee) {
+  requireMeetingAdmin_();
   const sheetName = committee === 'JAPSU' ? 'Ahli JAPSU' : CONFIG.rosterSheet;
   return readObjects_(getSpreadsheet_(), sheetName).filter(function(row) { return row.Nama && row.Emel; }).map(function(row) {
     return { name: row.Nama, position: row.Jawatan, faculty: row['Fakulti / Pusat / Institut'], email: row.Emel, appointmentDate: row['Tarikh Lantikan'] || '', endDate: row['Tarikh Tamat'] || '', status: row['Status Keahlian'] || 'Aktif' };

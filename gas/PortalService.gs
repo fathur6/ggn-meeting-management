@@ -1,6 +1,7 @@
 const PORTAL = { trackingSheet: 'UGS Attendance Tracking' };
 
 function getPortalMeeting(committee) {
+  requireMeetingAdmin_();
   const sheet = portalMeetingSheet_(committee);
   return {
     committee: committee,
@@ -15,12 +16,14 @@ function getPortalMeeting(committee) {
 }
 
 function savePortalMeeting(committee, data) {
+  requireMeetingAdmin_();
   const sheet = portalMeetingSheet_(committee);
   sheet.getRange('B3:B8').setValues([[data.number || ''], [data.date || ''], [data.time || ''], [data.location || ''], [data.link || ''], [data.documents || '']]);
   return getPortalMeeting(committee);
 }
 
 function getPortalMembers(committee) {
+  requireMeetingAdmin_();
   const sheetName = committee === 'JAPSU' ? 'Ahli JAPSU' : 'Ahli JKPS';
   const rows = readObjects_(getSpreadsheet_(), sheetName).filter(function(row) { return row.Nama && row.Emel; }).map(function(row) {
     return { id: row.Bil, name: row.Nama, position: row.Jawatan, faculty: row['Fakulti / Pusat / Institut'], email: row.Emel, appointment: row['Tarikh Lantikan'] || '', end: row['Tarikh Tamat'] || '', status: row['Status Keahlian'] || 'Aktif' };
@@ -29,6 +32,7 @@ function getPortalMembers(committee) {
 }
 
 function savePortalMember(committee, member) {
+  requireMeetingAdmin_();
   const sheet = getSpreadsheet_().getSheetByName(committee === 'JAPSU' ? 'Ahli JAPSU' : 'Ahli JKPS');
   const data = sheet.getDataRange().getValues();
   const rowIndex = data.slice(1).findIndex(function(row) { return String(row[0]) === String(member.id); });
@@ -39,6 +43,7 @@ function savePortalMember(committee, member) {
 }
 
 function archivePortalMember(committee, id) {
+  requireMeetingAdmin_();
   const sheet = getSpreadsheet_().getSheetByName(committee === 'JAPSU' ? 'Ahli JAPSU' : 'Ahli JKPS');
   const rows = sheet.getDataRange().getValues();
   const index = rows.slice(1).findIndex(function(row) { return String(row[0]) === String(id); });
@@ -48,6 +53,7 @@ function archivePortalMember(committee, id) {
 }
 
 function saveAttendanceTracking(committee, trackingId) {
+  requireMeetingAdmin_();
   const id = String(trackingId || '').trim();
   if (!/^[a-zA-Z0-9]{5}$/.test(id)) throw new Error('Enter the final five-character eMeeting tracking ID.');
   const sheet = ensurePortalSheet_(PORTAL.trackingSheet, ['Committee', 'Tracking ID', 'Report URL', 'Updated At']);
@@ -59,6 +65,7 @@ function saveAttendanceTracking(committee, trackingId) {
 }
 
 function getAttendanceTracking(committee) {
+  requireMeetingAdmin_();
   const sheet = ensurePortalSheet_(PORTAL.trackingSheet, ['Committee', 'Tracking ID', 'Report URL', 'Updated At']);
   const row = readObjects_(getSpreadsheet_(), PORTAL.trackingSheet).filter(function(item) { return item.Committee === committee; })[0];
   return row ? { trackingId: row['Tracking ID'], url: row['Report URL'] } : { trackingId: '', url: '' };
