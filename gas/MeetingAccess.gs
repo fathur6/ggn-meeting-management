@@ -1,4 +1,4 @@
-const MEETING_DOMAIN = /@unisza\.edu\.my$/;
+const MEETING_DOMAIN = /^[^\s@]+@unisza\.edu\.my$/;
 const MEETING_ZONE = 'Asia/Kuala_Lumpur';
 
 function meetingEmail_(value) {
@@ -34,6 +34,7 @@ function meetingRoster_(book, tab) {
   if (!['Nama', 'Emel', 'Fakulti / Pusat / Institut'].every(header => columns.has(header))) {
     throw new Error('Lajur daftar rasmi tidak lengkap.');
   }
+  const zone = book.getSpreadsheetTimeZone();
   const today = Utilities.formatDate(new Date(), MEETING_ZONE, 'yyyy-MM-dd');
   return rows.flatMap(row => {
     const cell = header => row[columns.get(header)];
@@ -42,8 +43,8 @@ function meetingRoster_(book, tab) {
     const unit = String(cell('Fakulti / Pusat / Institut') || '').replace(/\s+/g, ' ').trim();
     const role = String(cell('Jawatan') || '').trim();
     const status = String(cell('Status Keahlian') || '').trim().toLowerCase();
-    const started = membershipDate_(cell('Tarikh Lantikan'), book.getSpreadsheetTimeZone());
-    const ended = membershipDate_(cell('Tarikh Tamat'), book.getSpreadsheetTimeZone());
+    const started = membershipDate_(cell('Tarikh Lantikan'), zone);
+    const ended = membershipDate_(cell('Tarikh Tamat'), zone);
     const active = ['', 'aktif', 'active'].includes(status)
       && (!cell('Tarikh Lantikan') || Boolean(started && started <= today))
       && (!cell('Tarikh Tamat') || Boolean(ended && ended >= today));
@@ -57,7 +58,9 @@ function membershipDate_(value, zone) {
   }
   // Non-date cells written by the management form contain ISO dates.
   const day = String(value || '').trim();
-  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return '';
+  const date = new Date(day + 'T00:00:00Z');
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === day ? day : '';
 }
 
 function meetingAdmin_(book, email) {

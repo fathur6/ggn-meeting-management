@@ -79,6 +79,8 @@ JKPS quorum, meeting calls, and annual attendance exclude `Lepas` members from n
 
 ### Deployment verification
 
+Run the local authorization and voting checks with `node --test tests/circulation.test.cjs`.
+
 - With an `Ahli PPS` account, verify existing meeting and roster pages and save a test draft in the circulation tab.
 - As a plain committee member, verify the administration page and management API reject access. Check that a draft and another committee's circulation are inaccessible.
 - Publish a test paper whose PDF is restricted to the appropriate Google accounts. Verify the PDF, support and objection paths, required objection reason, receipt, unit tally, repeated submission and voting cutoff.

@@ -23,10 +23,9 @@ function getCirculationAdmin() {
 
 function getCirculationCandidates(committee) {
   const {book} = requireMeetingAdmin_();
-  return circulationRoster_(book, committee)
-    .filter(member => isCirculationUnit_(member.unit))
-    .map(({name, role, unit, email}) => ({name, role, unit, email}))
-    .sort((a, b) => a.unit.localeCompare(b.unit) || a.name.localeCompare(b.name));
+  const candidates = circulationRoster_(book, committee).filter(member => isCirculationUnit_(member.unit));
+  const unique = new Map(candidates.map(member => [circulationUnitKey_(member.unit) + '|' + member.email, member]));
+  return [...unique.values()].sort((a, b) => a.unit.localeCompare(b.unit) || a.name.localeCompare(b.name));
 }
 
 function saveCirculationDraft(form) {
