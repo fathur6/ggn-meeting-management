@@ -23,7 +23,7 @@ function collectAttendees() {
 
 function post() {
   const cfg = window.JKPS_SYNC_CONFIG;
-  if (!cfg) return;
+  if (!cfg || !cfg.token) return;
   const attendees = collectAttendees();
   if (!attendees.length) return;
   const meetingTitle = (document.querySelector('.x_title h2') || {}).innerText ? document.querySelector('.x_title h2').innerText.trim() : document.title;

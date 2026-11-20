@@ -1,0 +1,287 @@
+<section class="page" id="circulation" aria-labelledby="circulation-heading">
+  <div class="edaran-toolbar">
+    <div><h2 id="circulation-heading">Pengesahan Edaran</h2><p class="note">Sediakan kertas JKPS atau JAPSU dan pantau maklum balas setiap unit.</p></div>
+    <button id="circulation-new" type="button">Kertas baharu</button>
+  </div>
+  <p id="circulation-status" class="note" role="status" aria-live="polite"></p>
+  <section class="panel" id="circulation-editor" hidden>
+    <h2 id="circulation-editor-title">Kertas baharu</h2>
+    <form id="circulation-form">
+      <div class="edaran-form-grid">
+        <label>Jawatankuasa<select name="committee" required><option>JAPSU</option><option>JKPS</option></select></label>
+        <label>Rujukan edaran<input name="reference" maxlength="160" placeholder="JAPSU Edaran Bil. 2/2026"></label>
+        <label class="edaran-span">Tajuk kertas<input name="title" maxlength="300" required></label>
+        <label class="edaran-span">Maklumat jawatankuasa<textarea name="context" rows="2" maxlength="2000" placeholder="Contohnya bilangan mesyuarat, nombor kertas atau perkara agenda"></textarea></label>
+        <label class="edaran-span">Perkara untuk pertimbangan<textarea name="summary" rows="5" maxlength="8000" placeholder="Masukkan satu perkara pada setiap baris."></textarea></label>
+        <label>Pautan PDF di Google Drive<input name="pdf" type="url" placeholder="https://drive.google.com/file/d/…/view" aria-describedby="circulation-pdf-note"></label>
+        <label>Tarikh dan masa tutup (MYT)<input name="deadline" type="datetime-local"></label>
+      </div>
+      <p class="note" id="circulation-pdf-note">Tetapkan akses umum PDF kepada Restricted dan kongsi fail dengan ahli jawatankuasa yang berkenaan sebelum menerbitkan edaran.</p>
+      <fieldset class="edaran-seats">
+        <legend>Wakil fakulti dan institut</legend>
+        <p class="note">Tandakan wakil yang boleh mengundi. Jika beberapa wakil dilantik untuk satu unit, sistem merekodkan satu undi untuk unit itu.</p>
+        <label class="edaran-filter">Cari nama atau unit<input id="circulation-filter" type="search"></label>
+        <p class="note" id="circulation-seat-count" aria-live="polite"></p>
+        <div class="edaran-candidates" id="circulation-candidates"></div>
+      </fieldset>
+      <div class="edaran-actions">
+        <button type="button" class="secondary" id="circulation-cancel">Batal</button>
+        <button type="submit" id="circulation-save">Simpan draf</button>
+      </div>
+    </form>
+  </section>
+  <section class="panel edaran-list">
+    <h2>Senarai kertas edaran</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th scope="col">Kertas</th><th scope="col">Status</th><th scope="col">Maklum balas</th><th scope="col">Tindakan</th></tr></thead>
+      <tbody id="circulation-rows"></tbody>
+    </table></div>
+  </section>
+</section>
+<style>
+#circulation [hidden]{display:none!important}
+#circulation .note{margin:.35rem 0 .8rem}
+.edaran-toolbar{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;margin-bottom:18px}
+.edaran-toolbar h2,.edaran-list h2{margin:0}
+.edaran-form-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:15px}
+.edaran-span{grid-column:1/-1}
+#circulation textarea{width:100%;border:1px solid #d9d9dd;border-radius:4px;padding:10px;resize:vertical;font:14px/1.55 Arial,sans-serif;letter-spacing:0;color:#212121}
+#circulation input[type=checkbox]{height:18px;width:18px;min-height:0;accent-color:#104534;margin:0}
+.edaran-seats{margin:24px 0 15px;border:1px solid #dae4dc;border-radius:10px;padding:14px;min-width:0}
+.edaran-seats legend{padding:0 5px;font-size:15px;font-weight:700}
+.edaran-filter{max-width:25rem}
+.edaran-candidates{max-height:24rem;overflow:auto;padding:0 8px 8px 0}
+.edaran-unit{padding:10px 0;border-top:1px solid #e5ede7}
+.edaran-unit h3{margin:0 0 5px;font-size:14px}
+.edaran-unit label{display:flex;align-items:center;gap:8px;font:14px/1.45 Arial,sans-serif;text-transform:none;letter-spacing:0;color:#23342b;min-height:30px}
+.edaran-unit label span{overflow-wrap:anywhere}
+.edaran-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.edaran-status{display:inline-block;border-radius:20px;padding:4px 8px;background:#e8f1eb;color:#104534;font-weight:700;font-size:12px;white-space:nowrap}
+.edaran-list table{margin-top:12px;min-width:620px}
+.edaran-list td:last-child{min-width:190px}
+.edaran-link{display:inline-block;padding:7px 4px;color:#104534}
+#circulation .edaran-error{color:#982f26}
+#circulation button:disabled{opacity:.55;cursor:default}
+@media(max-width:720px){.edaran-form-grid{grid-template-columns:1fr}.edaran-toolbar{flex-wrap:wrap}.edaran-candidates{max-height:18rem}}
+</style>
+<script>
+(() => {
+  const byId = id => document.getElementById('circulation-' + id);
+  const form = byId('form');
+  const state = {paper: null, candidates: [], loadingCandidates: false, busy: false, loadRequest: 0};
+
+  function rpc(method, ...args) {
+    return new Promise((resolve, reject) => {
+      google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[method](...args);
+    });
+  }
+
+  function tell(message, error = false) {
+    const notice = byId('status');
+    notice.textContent = message;
+    notice.classList.toggle('edaran-error', error);
+  }
+
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    node.textContent = text;
+    if (className) node.className = className;
+    return node;
+  }
+
+  function action(text, callback, secondary = true) {
+    const button = element('button', text, secondary ? 'secondary' : '');
+    button.type = 'button';
+    button.addEventListener('click', callback);
+    return button;
+  }
+
+  async function load() {
+    try {
+      const {papers} = await rpc('getCirculationAdmin');
+      const table = byId('rows');
+      const rows = papers.map(paper => {
+        const tr = document.createElement('tr');
+        const title = element('td', '');
+        title.append(element('strong', paper.title), element('p', paper.committee + ' · ' + (paper.reference || 'Rujukan belum diisi'), 'note'));
+        const status = element('td', '');
+        status.append(element('span', paper.statusLabel, 'edaran-status'));
+        const tally = element('td', '');
+        const {support, oppose, waiting} = paper.tally;
+        tally.append(element('div', support + ' menyokong'), element('div', oppose + ' bantahan'), element('div', waiting + ' belum mengundi'));
+        const td = element('td', '');
+        const controls = element('div', '', 'edaran-actions');
+        if (paper.status === 'Draf') {
+          controls.append(action('Sunting', () => openEditor(paper)), action('Terbitkan', () => changeStatus(paper, 'Terbit'), false));
+        } else {
+          if (paper.link) {
+            const link = element('a', 'Buka edaran ↗', 'edaran-link');
+            link.href = paper.link;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            controls.append(link, action('Salin pautan', () => copyLink(paper.link)));
+          }
+          if (paper.status === 'Dibuka') controls.append(action('Tutup undian', () => changeStatus(paper, 'Tutup')));
+        }
+        td.append(controls);
+        tr.append(title, status, tally, td);
+        return tr;
+      });
+      if (!rows.length) {
+        const row = document.createElement('tr');
+        const cell = element('td', 'Belum ada kertas edaran.', 'note');
+        cell.colSpan = 4;
+        row.append(cell);
+        rows.push(row);
+      }
+      table.replaceChildren(...rows);
+    } catch (error) {
+      tell(error.message || String(error), true);
+    }
+  }
+
+  function key(member) {
+    return member.unit.trim().replace(/\s+/g, ' ').toLowerCase() + '|' + member.email.toLowerCase();
+  }
+
+  function paintCandidates() {
+    const filter = byId('filter').value.trim().toLowerCase();
+    const groups = new Map();
+    for (const [index, member] of state.candidates.entries()) {
+      if (!((member.unit + ' ' + member.name + ' ' + member.role).toLowerCase().includes(filter))) continue;
+      if (!groups.has(member.unit)) {
+        const box = element('section', '', 'edaran-unit');
+        box.append(element('h3', member.unit));
+        groups.set(member.unit, box);
+      }
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = member.selected;
+      checkbox.disabled = state.busy;
+      checkbox.dataset.index = String(index);
+      const text = member.name + (member.role ? ' · ' + member.role : '') + (member.retired ? ' · tiada dalam daftar aktif' : '');
+      label.append(checkbox, element('span', text));
+      groups.get(member.unit).append(label);
+    }
+    byId('candidates').replaceChildren(...groups.values());
+    if (!groups.size && !state.loadingCandidates) {
+      byId('candidates').append(element('p', 'Tiada wakil sepadan.', 'note'));
+    }
+    const count = new Set(state.candidates.filter(member => member.selected).map(member => member.unit.trim().toLowerCase())).size;
+    byId('seat-count').textContent = state.loadingCandidates ? 'Memuatkan daftar ahli…' : count + ' unit dipilih';
+  }
+
+  async function loadCandidates(selection = []) {
+    const request = ++state.loadRequest;
+    const committee = form.elements.committee.value;
+    state.candidates = [];
+    state.loadingCandidates = true;
+    let loaded = false;
+    byId('save').disabled = true;
+    paintCandidates();
+    try {
+      const candidates = await rpc('getCirculationCandidates', committee);
+      if (request !== state.loadRequest) return;
+      const selected = new Set(selection.map(key));
+      state.candidates = candidates.map(member => ({...member, selected: selected.has(key(member))}));
+      loaded = true;
+      const live = new Set(candidates.map(key));
+      for (const old of selection.filter(member => !live.has(key(member)))) {
+        state.candidates.push({...old, name: old.email, role: '', selected: true, retired: true});
+      }
+    } catch (error) {
+      if (request !== state.loadRequest) return;
+      tell(error.message || String(error), true);
+      return;
+    } finally {
+      if (request === state.loadRequest) {
+        state.loadingCandidates = false;
+        byId('save').disabled = state.busy || !loaded;
+        paintCandidates();
+      }
+    }
+  }
+
+  function uuid() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    const result = Array.from(crypto.getRandomValues(new Uint8Array(16)), n => n.toString(16).padStart(2, '0')).join('');
+    return result.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5');
+  }
+
+  function openEditor(paper) {
+    state.paper = paper || {id: uuid(), revision: 0, committee: 'JAPSU'};
+    form.reset();
+    for (const field of ['committee', 'title', 'reference', 'context', 'summary', 'pdf', 'deadline']) {
+      if (state.paper[field]) form.elements[field].value = state.paper[field];
+    }
+    byId('filter').value = '';
+    byId('editor-title').textContent = paper ? 'Sunting draf' : 'Kertas baharu';
+    byId('editor').hidden = false;
+    tell('');
+    form.elements.title.focus();
+    loadCandidates(state.paper.candidates);
+  }
+
+  async function changeStatus(paper, next) {
+    if (state.busy) return;
+    const question = next === 'Terbit' ? 'Terbitkan edaran ini dan buka undian?' : 'Tutup undian bagi edaran ini?';
+    if (!window.confirm(question)) return;
+    state.busy = true;
+    try {
+      await rpc('changeCirculationStatus', paper.id, paper.revision, next);
+      if (paper.id === state.paper?.id) byId('editor').hidden = true;
+      tell(next === 'Terbit' ? 'Edaran diterbitkan. Salin pautan untuk dikongsi kepada ahli.' : 'Undian ditutup.');
+      await load();
+    } catch (error) {
+      tell(error.message || String(error), true);
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function copyLink(url) {
+    try {
+      await navigator.clipboard.writeText(url);
+      tell('Pautan telah disalin untuk emel atau WhatsApp.');
+    } catch (_) {
+      window.prompt('Salin pautan untuk emel atau WhatsApp.', url);
+    }
+  }
+
+  byId('new').addEventListener('click', () => { if (!state.busy) openEditor(); });
+  byId('cancel').addEventListener('click', () => { if (!state.busy) byId('editor').hidden = true; });
+  form.elements.committee.addEventListener('change', () => { byId('filter').value = ''; loadCandidates(); });
+  byId('filter').addEventListener('input', paintCandidates);
+  byId('candidates').addEventListener('change', event => {
+    const member = state.candidates[Number(event.target.dataset.index)];
+    if (!member) return;
+    member.selected = event.target.checked;
+    const count = new Set(state.candidates.filter(entry => entry.selected).map(entry => entry.unit.trim().toLowerCase())).size;
+    byId('seat-count').textContent = count + ' unit dipilih';
+  });
+  form.addEventListener('submit', async event => {
+    event.preventDefault();
+    if (state.busy || state.loadingCandidates || !state.paper) return;
+    const fields = Object.fromEntries(new FormData(form).entries());
+    const candidates = state.candidates.filter(member => member.selected).map(({unit, email}) => ({unit, email}));
+    state.busy = true;
+    byId('save').disabled = true;
+    byId('save').textContent = 'Menyimpan…';
+    try {
+      const saved = await rpc('saveCirculationDraft', {...fields, candidates, id: state.paper.id, revision: state.paper.revision});
+      state.paper = saved;
+      byId('editor').hidden = true;
+      tell('Draf disimpan. Semak PDF dan senarai wakil sebelum menerbitkan edaran.');
+      await load();
+    } catch (error) {
+      tell(error.message || String(error), true);
+    } finally {
+      state.busy = false;
+      byId('save').disabled = false;
+      byId('save').textContent = 'Simpan draf';
+    }
+  });
+  document.querySelector('[data-page="circulation"]').addEventListener('click', load);
+})();
+</script>

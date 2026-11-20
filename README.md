@@ -10,13 +10,7 @@ The new management portal is served from the same deployment at:
 https://script.google.com/macros/s/DEPLOYMENT_ID/exec?view=app
 ```
 
-It provides three pages:
-
-1. **Overview**: current JKPS/JAPSU member counts and active meeting references.
-2. **JKPS Quorum**: live eMeeting attendance, quorum, and annual attendance reports.
-3. **JAPSU Members**: current `Ahli JAPSU` roster.
-
-The existing email and member-management API remains unchanged. `JAPSU` live attendance/quorum is deliberately not enabled because no JAPSU eMeeting attendance report or quorum policy has been supplied.
+The management portal includes meeting settings and invitations, committee rosters, live attendance and **Pengesahan Edaran**. The portal and its management API use the signed-in UniSZA account and the `Ahli PPS` roster. The extension's `syncLiveAttendance` action uses its dedicated token. The extension receives only a success response.
 
 The dashboard counts attendance against the official `Ahli JKPS` roster in the configured spreadsheet. The current roster has 35 eligible members, so quorum is 24 seats (`ceil(2 x 35 / 3)`). Each new meeting stores its eligible-member count and quorum threshold at creation, preserving historical results after later roster changes.
 
@@ -36,8 +30,8 @@ Apps Script cannot reuse the UniSZA SSO session held in a browser. The included 
 
 1. Review the source, then run `clasp push` to upload it to the supplied Apps Script project.
 2. In the Apps Script editor, run `initializeApp` once and authorize it. This creates `JKPS Live Attendance` and `JKPS Representation Rules`.
-3. Create a high-entropy token and run `setLiveSyncToken('your-token')` in the Apps Script editor. Do not put this token in source control.
-4. Deploy the script as a web app. Use the `/exec` URL and restrict dashboard access to UniSZA users.
+3. Set a new random token of at least 24 characters in the Script Property `JKPS_LIVE_SYNC_TOKEN`. Put its matching value in a local copy of the Chrome extension's `config.js` and keep that copy out of Git. The application requires the property before accepting sync requests.
+4. Deploy the web app as a UniSZA account with access to the official workbook. Use **Execute as me**. The extension posts to the shared deployment without an interactive Google login, so the manifest retains that transport. All human-facing routes and management methods check a verified UniSZA session inside Apps Script. Test with the intended administrator and a separate committee member before distributing links.
 5. In Chrome, open `chrome://extensions`, enable Developer mode, select **Load unpacked**, and choose `chrome-extension`.
 6. Open the extension, enter the web-app `/exec` URL and the token, then keep the authenticated eMeeting attendance report open during the meeting.
 7. Fill `JKPS Representation Rules` for faculties that may send a representative. Enter the faculty label exactly as it appears in eMeeting and the represented member's email from `Ahli JKPS`.
@@ -72,3 +66,22 @@ Running `initializeMemberLifecycleColumns()` adds these columns to both `Ahli JK
 Use ISO dates (`YYYY-MM-DD`). New members should be created with `Status Keahlian: Aktif` and a real `Tarikh Lantikan`. To retain an outgoing member, call the API action `archiveMember` or set `Tarikh Tamat` and `Status Keahlian: Lepas`; do not delete the row.
 
 JKPS quorum, meeting calls, and annual attendance exclude `Lepas` members from new meetings. Historical attendance remains intact. `seedCurrentMemberships()` now uses each JKPS member's `Tarikh Lantikan` when populating the annual-report history.
+
+
+## Pengesahan Edaran
+
+1. In the official spreadsheet, set General access to **Restricted** and review direct shares. Give edit access only to trusted PPS staff because the workbook contains `Ahli PPS`, authorization rosters and votes. The application checks the workbook's general sharing setting before processing requests.
+2. As a member of **Ahli PPS**, open the deployed web app with `?view=app` and choose **Pengesahan Edaran → Kertas baharu**.
+3. Choose JKPS or JAPSU. Enter the circulation reference, proposal title, committee information, matters for consideration, Google Drive PDF link and the closing time in Malaysia. Confirm the voting representatives against the selected committee's live roster. Each selected faculty or institute gets one vote even when multiple delegates are approved.
+4. Save the draft and choose **Terbitkan**. The secretariat must set the PDF's General access to **Restricted**, share it with the intended committee audience, and check it with a representative account. Google Drive independently controls file access. Publishing requires a reference, summary, valid PDF, a future deadline, and at least one unit. The draft becomes read-only after publication. The admin can close voting early, and the deadline stops further responses.
+5. Copy the generated link for email or WhatsApp. It opens a standalone member page for this paper. The relevant committee's active roster can view the circulation and tally. The chosen representatives can vote for their unit. A person's current membership and unit are checked again when they vote. Admin authorization comes from `Ahli PPS`, including when an admin is also a committee member.
+6. The application creates **Pengesahan Edaran** in the official spreadsheet on the first draft save. The one tab holds `KERTAS` and `UNDI` records. It retains the draft revision, published representatives, vote, reason for objection, verified voter email, timestamps and email status. The member page returns unit-level results and the viewer's own voting options. It keeps individual voting records in the spreadsheet.
+
+### Deployment verification
+
+- With an `Ahli PPS` account, verify existing meeting and roster pages and save a test draft in the circulation tab.
+- As a plain committee member, verify the administration page and management API reject access. Check that a draft and another committee's circulation are inaccessible.
+- Publish a test paper whose PDF is restricted to the appropriate Google accounts. Verify the PDF, support and objection paths, required objection reason, receipt, unit tally, repeated submission and voting cutoff.
+- Verify the separately configured eMeeting sync extension still records attendance. Use a prior version of the deployment as the rollback point.
+
+A deployment account from outside UniSZA or a Workspace policy that hides the active email will cause sign-in checks to fail. Test the actual `/exec` link with a representative's Google Workspace account. [Apps Script session documentation](https://developers.google.com/apps-script/reference/base/session)
