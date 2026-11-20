@@ -13,16 +13,13 @@ function signedInMeetingEmail_() {
   return email;
 }
 
-function privateMeetingFile_(id, message, resourceKey) {
-  const file = resourceKey ? DriveApp.getFileByIdAndResourceKey(id, resourceKey) : DriveApp.getFileById(id);
-  if (file.getSharingAccess() !== DriveApp.Access.PRIVATE) throw new Error(message);
-  return file;
-}
-
 function meetingWorkbook_() {
   // This workbook supplies authorization as well as records. Anyone with write
   // access to it is in a position to alter the rosters.
-  privateMeetingFile_(CONFIG.spreadsheetId, 'Tetapkan akses umum Google Sheet rasmi kepada Restricted sebelum menggunakan portal.');
+  const file = DriveApp.getFileById(CONFIG.spreadsheetId);
+  if (file.getSharingAccess() !== DriveApp.Access.PRIVATE) {
+    throw new Error('Tetapkan akses umum Google Sheet rasmi kepada Restricted sebelum menggunakan portal.');
+  }
   return SpreadsheetApp.openById(CONFIG.spreadsheetId);
 }
 

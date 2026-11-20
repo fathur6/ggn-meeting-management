@@ -303,7 +303,7 @@ function circulationPdf_(value) {
 
 function verifyCirculationPdf_(value) {
   const pdf = circulationPdf_(value);
-  const file = privateMeetingFile_(pdf.id, 'Tetapkan akses umum PDF kepada Restricted dan kongsi dengan ahli jawatankuasa yang berkenaan.', pdf.resourceKey);
+  const file = pdf.resourceKey ? DriveApp.getFileByIdAndResourceKey(pdf.id, pdf.resourceKey) : DriveApp.getFileById(pdf.id);
   if (file.getMimeType() !== 'application/pdf') throw new Error('Pautan ini mesti merujuk fail PDF.');
   return pdf;
 }

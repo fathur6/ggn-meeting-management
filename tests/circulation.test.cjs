@@ -147,8 +147,8 @@ test('the portal, existing management RPCs and legacy API require Ahli PPS', () 
   assert.match(methods.doGet(navigation).message, /Log masuk/);
 });
 
-test('the public workbook blocks drafts and a public or non-PDF link blocks publication', () => {
-  const {state, data, draft, publish} = testEnvironment();
+test('a reviewer-readable PDF supports publication and voting while the workbook stays restricted', () => {
+  const {methods, state, data, draft, publish, vote} = testEnvironment();
   state.bookAccess = 'ANYONE_WITH_LINK';
   assert.throws(draft, /Google Sheet rasmi/);
   assert.equal(data['Pengesahan Edaran'], undefined);
@@ -157,12 +157,13 @@ test('the public workbook blocks drafts and a public or non-PDF link blocks publ
   assert.throws(() => draft({deadline: '2098-02-30T10:00'}), /tarikh dan masa/);
   draft();
   state.pdfAccess = 'ANYONE_WITH_LINK';
-  assert.throws(publish, /PDF kepada Restricted/);
-  state.pdfAccess = 'PRIVATE';
   state.pdfMime = 'text/plain';
   assert.throws(publish, /merujuk fail PDF/);
   state.pdfMime = 'application/pdf';
   assert.equal(publish().status, 'Dibuka');
+  state.user = japsuMember;
+  assert.match(methods.getCirculationPage(paperId).current.pdfUrl, /sample-test-drive-id\/view$/);
+  assert.equal(vote().receipt, 'TIADA');
 });
 
 test('drafts and other committees are hidden, and published details are frozen', () => {
