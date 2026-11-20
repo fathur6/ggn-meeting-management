@@ -28,13 +28,70 @@ Apps Script cannot reuse the UniSZA SSO session held in a browser. The included 
 
 ## Setup
 
-1. Review the source, then run `clasp push` to upload it to the supplied Apps Script project.
+1. Follow [GitHub and Apps Script releases](#github-and-apps-script-releases) to review and upload the project.
 2. In the Apps Script editor, run `initializeApp` once and authorize it. This creates `JKPS Live Attendance` and `JKPS Representation Rules`.
 3. Set a new random token of at least 24 characters in the Script Property `JKPS_LIVE_SYNC_TOKEN`. Put its matching value in a local copy of the Chrome extension's `config.js` and keep that copy out of Git. The application requires the property before accepting sync requests.
 4. Deploy the web app as a UniSZA account with access to the official workbook. Use **Execute as me**. The extension posts to the shared deployment without an interactive Google login, so the manifest retains that transport. All human-facing routes and management methods check a verified UniSZA session inside Apps Script. Test with the intended administrator and a separate committee member before distributing links.
 5. In Chrome, open `chrome://extensions`, enable Developer mode, select **Load unpacked**, and choose `chrome-extension`.
 6. Open the extension, enter the web-app `/exec` URL and the token, then keep the authenticated eMeeting attendance report open during the meeting.
 7. Fill `JKPS Representation Rules` for faculties that may send a representative. Enter the faculty label exactly as it appears in eMeeting and the represented member's email from `Ahli JKPS`.
+
+## GitHub and Apps Script releases
+
+### Sign in
+
+Sign in to GitHub in the browser and use the UniSZA Google account that can edit the linked Apps Script project. Allow the [Apps Script API](https://script.google.com/home/usersettings) for that Google account.
+
+```sh
+gh auth login --hostname github.com --git-protocol https --web
+gh auth setup-git --hostname github.com
+gh repo view fathur6/ggn-meeting-management --json nameWithOwner,defaultBranchRef,viewerPermission
+clasp login
+clasp show-authorized-user
+```
+
+### Review and publish
+
+Use a checkout based on the GitHub repository. If you received `ggn-edaran-management.bundle`, set `BUNDLE_PATH` to its absolute file path. The bundle uses a local source snapshot as its base. The commands below import the feature commits onto GitHub's history.
+
+```sh
+git clone https://github.com/fathur6/ggn-meeting-management.git
+cd ggn-meeting-management
+git switch -c edaran-management
+git fetch "$BUNDLE_PATH" edaran-management
+git rev-list --reverse 285ce70..FETCH_HEAD | git cherry-pick --stdin
+```
+
+Resolve any conflicts against the code in GitHub and review the resulting diff before pushing the branch with `git push -u origin edaran-management`. Use the reviewed source for deployment.
+
+Run these commands from the repository root. The checked-in `.clasp.json` targets the existing Apps Script project and limits uploads to the `gas/` directory.
+
+```sh
+node --test tests/circulation.test.cjs
+clasp status
+clasp list-deployments
+clasp list-versions
+```
+
+Before uploading, take a source snapshot of the current Apps Script project in a temporary folder. Resolve any online editor changes into Git before uploading. In Apps Script, record the existing web app's deployment ID and live version. Choose the entry that matches the `/exec` URL in use.
+
+```sh
+review_dir=$(mktemp -d)
+script_id=$(node -p "require('./.clasp.json').scriptId")
+(cd "$review_dir" && clasp clone-script "$script_id" --rootDir gas)
+diff -ru "$review_dir/gas" gas
+```
+
+After reviewing the differences, use `clasp push` to update the script project. Test the uploaded code with **Deploy → Test deployments** in the Apps Script editor. When it passes, create a version and update the existing deployment. Use the version number returned by `create-version` and the web app's deployment ID recorded earlier.
+
+```sh
+clasp push
+clasp create-version "Pengesahan Edaran"
+clasp update-deployment "$DEPLOYMENT_ID" --versionNumber "$VERSION_NUMBER"
+clasp list-deployments
+```
+
+Open the existing `/exec?view=app` link and follow [Deployment verification](#deployment-verification). To roll back the web app, update the same deployment to the prior version number.
 
 ## Annual attendance reporting
 
