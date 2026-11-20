@@ -82,7 +82,7 @@ script_id=$(node -p "require('./.clasp.json').scriptId")
 diff -ru "$review_dir/gas" gas
 ```
 
-After reviewing the differences, use `clasp push` to update the script project. Test the uploaded code with **Deploy → Test deployments** in the Apps Script editor. When it passes, create a version and update the existing deployment. Use the version number returned by `create-version` and the web app's deployment ID recorded earlier.
+After reviewing the differences, use `clasp push` to update the script project. When the project requests new permissions, the owner of the existing deployment must open the Apps Script editor, run `checkMeetingDriveAccess`, and grant read access to Drive. A successful run confirms that the account can verify the official workbook's sharing settings and open it. Test the uploaded code with **Deploy → Test deployments**. When it passes, create a version and update the existing deployment. Use the version number returned by `create-version` and the web app's deployment ID recorded earlier.
 
 ```sh
 clasp push

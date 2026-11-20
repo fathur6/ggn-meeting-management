@@ -492,11 +492,14 @@ function createJsonResponse_(obj) {
 
 function renderRestrictedMeetingPage_(error, returnQuery) {
   const template = HtmlService.createTemplateFromFile('AccessDenied');
-  template.message = error.message || 'Gunakan pautan edaran yang dihantar oleh Urus Setia PPS.';
+  const needsDriveConsent = error instanceof MeetingDriveAuthorizationError_;
+  template.message = needsDriveConsent && returnQuery === 'view=app'
+    ? 'Pemilik deployment perlu menjalankan checkMeetingDriveAccess dalam editor Apps Script dan meluluskan akses baca Google Drive.'
+    : error.message || 'Gunakan pautan edaran yang dihantar oleh Urus Setia PPS.';
   const url = error instanceof MeetingAccountError_ && returnQuery ? ScriptApp.getService().getUrl() : '';
   template.signInUrl = url
     ? 'https://accounts.google.com/AccountChooser?continue=' + encodeURIComponent(url + '?' + returnQuery)
     : '';
-  return template.evaluate().setTitle(template.signInUrl ? 'Log masuk dengan Google UniSZA' : 'Akses terhad')
-    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  template.title = needsDriveConsent ? 'Kebenaran portal diperlukan' : template.signInUrl ? 'Log masuk ke portal' : 'Akses terhad';
+  return template.evaluate().setTitle(template.title).addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }

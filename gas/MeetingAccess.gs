@@ -2,6 +2,7 @@ const MEETING_DOMAIN = /^[^\s@]+@unisza\.edu\.my$/;
 const MEETING_ZONE = 'Asia/Kuala_Lumpur';
 
 class MeetingAccountError_ extends Error {}
+class MeetingDriveAuthorizationError_ extends Error {}
 
 function meetingEmail_(value) {
   return String(value || '').trim().toLowerCase();
@@ -15,11 +16,28 @@ function signedInMeetingEmail_() {
   return email;
 }
 
+// Run from the Apps Script editor using the deployment owner's account.
+function checkMeetingDriveAccess() {
+  const active = meetingEmail_(Session.getActiveUser().getEmail());
+  const effective = meetingEmail_(Session.getEffectiveUser().getEmail());
+  if (!active || active !== effective) throw new Error('Jalankan semakan ini menggunakan akaun pemilik deployment portal.');
+  meetingWorkbook_();
+  console.log('Akses Google Drive dan Google Sheet rasmi disahkan.');
+}
+
 function meetingWorkbook_() {
   // This workbook supplies authorization as well as records. Anyone with write
   // access to it is in a position to alter the rosters.
-  const file = DriveApp.getFileById(CONFIG.spreadsheetId);
-  if (file.getSharingAccess() !== DriveApp.Access.PRIVATE) {
+  let sharingAccess;
+  try {
+    sharingAccess = DriveApp.getFileById(CONFIG.spreadsheetId).getSharingAccess();
+  } catch (error) {
+    if (/https:\/\/www\.googleapis\.com\/auth\/drive(?:\.readonly)?\b/.test(error.message)) {
+      throw new MeetingDriveAuthorizationError_('Kebenaran Google Drive belum diberikan kepada portal. Hubungi Urus Setia PPS.');
+    }
+    throw error;
+  }
+  if (sharingAccess !== DriveApp.Access.PRIVATE) {
     throw new Error('Tetapkan akses umum Google Sheet rasmi kepada Restricted sebelum menggunakan portal.');
   }
   return SpreadsheetApp.openById(CONFIG.spreadsheetId);

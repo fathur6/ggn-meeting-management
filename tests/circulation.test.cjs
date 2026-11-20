@@ -39,7 +39,7 @@ function testEnvironment() {
     ],
     'Ahli JKPS': [rosterHeaders, [1, 'Wakil JKPS', 'Timbalan', faculty, jkpsMember, '', '', 'Aktif']],
   };
-  const state = {user: admin, bookAccess: 'PRIVATE', pdfAccess: 'PRIVATE', pdfMime: 'application/pdf', mail: [], failMail: false};
+  const state = {user: admin, bookAccess: 'PRIVATE', pdfAccess: 'PRIVATE', pdfMime: 'application/pdf', driveScopeMissing: false, mail: [], failMail: false};
   let locked = false;
   const save = value => typeof value === 'string' && value.startsWith("'") ? value.slice(1) : value;
 
@@ -77,13 +77,18 @@ function testEnvironment() {
     getSpreadsheetTimeZone: () => 'Asia/Kuala_Lumpur',
     insertSheet(name) { data[name] = []; return sheet(name); },
   };
-  const driveFile = id => ({
-    getSharingAccess: () => id === 'sample-test-drive-id' ? state.pdfAccess : state.bookAccess,
-    getMimeType: () => state.pdfMime,
-  });
+  const driveFile = id => {
+    if (state.driveScopeMissing) {
+      throw new Error('You do not have permission to call DriveApp.getFileById. Required permissions: https://www.googleapis.com/auth/drive.readonly');
+    }
+    return {
+      getSharingAccess: () => id === 'sample-test-drive-id' ? state.pdfAccess : state.bookAccess,
+      getMimeType: () => state.pdfMime,
+    };
+  };
   const environment = {
     Date, console,
-    Session: {getActiveUser: () => ({getEmail: () => state.user})},
+    Session: {getActiveUser: () => ({getEmail: () => state.user}), getEffectiveUser: () => ({getEmail: () => admin})},
     Utilities: {formatDate, getUuid: randomUUID},
     SpreadsheetApp: {openById: () => book, flush: () => {}},
     ScriptApp: {getService: () => ({getUrl: () => 'https://example.invalid/exec'})},
@@ -101,7 +106,7 @@ function testEnvironment() {
       createTemplateFromFile(file) {
         return {
           evaluate() {
-            return {file, paperId: this.paperId, committee: this.committee, message: this.message, signInUrl: this.signInUrl,
+            return {file, paperId: this.paperId, committee: this.committee, message: this.message, signInUrl: this.signInUrl, title: this.title,
               setTitle() { return this; }, addMetaTag() { return this; }};
           },
         };
@@ -170,6 +175,27 @@ test('Google sign-in returns to the requested portal page or ballot', () => {
   assert.equal(methods.doGet({parameter: voting}).file, 'Circulation');
   state.bookAccess = 'ANYONE_WITH_LINK';
   assert.equal(methods.doGet({parameter: voting}).signInUrl, '');
+});
+
+test('missing Drive consent stays separate from voter sign-in and needs the deployment owner', () => {
+  const {methods, state} = testEnvironment();
+  state.driveScopeMissing = true;
+  const adminPage = methods.doGet({parameter: {view: 'app'}});
+  assert.equal(adminPage.title, 'Kebenaran portal diperlukan');
+  assert.match(adminPage.message, /checkMeetingDriveAccess/);
+  assert.equal(adminPage.signInUrl, '');
+  assert.throws(() => methods.checkMeetingDriveAccess(), /Kebenaran Google Drive/);
+
+  state.user = japsuMember;
+  const voterPage = methods.doGet({parameter: {view: 'edaran', id: paperId}});
+  assert.match(voterPage.message, /Hubungi Urus Setia PPS/);
+  assert.equal(voterPage.signInUrl, '');
+  assert.throws(() => methods.checkMeetingDriveAccess(), /akaun pemilik deployment/);
+
+  state.user = admin;
+  state.driveScopeMissing = false;
+  assert.doesNotThrow(() => methods.checkMeetingDriveAccess());
+  assert.equal(methods.doGet({parameter: {view: 'app'}}).file, 'Management');
 });
 
 test('a reviewer-readable PDF supports publication and voting while the workbook stays restricted', () => {
