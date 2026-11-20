@@ -1,7 +1,25 @@
 <!doctype html>
 <html lang="ms">
 <head><base target="_top"><meta name="viewport" content="width=device-width, initial-scale=1">
-<style>body{margin:0;padding:12vh 22px;background:#f5f7f5;color:#18352b;font:1rem/1.6 system-ui,sans-serif}main{max-width:36rem;margin:auto;padding:28px;background:white;border:1px solid #dce5df;border-radius:14px}h1{line-height:1.2;margin:0 0 12px}p{margin:0}</style>
+<style>
+  body{margin:0;padding:12vh 22px;background:#f5f7f5;color:#18352b;font:1rem/1.6 system-ui,sans-serif}
+  main{max-width:36rem;margin:auto;padding:28px;background:white;border:1px solid #dce5df;border-radius:14px}
+  h1{line-height:1.2;margin:0 0 12px}
+  p{margin:0}
+  .sign-in{display:inline-block;margin:20px 0 12px;padding:9px 16px;border-radius:8px;background:#104534;color:white;font-weight:650;text-decoration:none}
+  .sign-in:hover{background:#18352b}
+  .sign-in:focus-visible{outline:2px solid #104534;outline-offset:3px}
+  .note{color:#455950;font-size:.875rem}
+</style>
 </head>
-<body><main><h1>Akses terhad</h1><p><?= message ?></p></main></body>
+<body>
+  <main>
+    <h1><?= signInUrl ? 'Log masuk ke portal' : 'Akses terhad' ?></h1>
+    <p><?= message ?></p>
+    <? if (signInUrl) { ?>
+      <a class="sign-in" href="<?= signInUrl ?>" target="_blank" rel="noopener noreferrer">Pilih akaun Google UniSZA</a>
+      <p class="note">Google akan dibuka dalam tab baharu. Pilih akaun @unisza.edu.my. Jika akaun masih tidak dikesan, buka pautan asal dalam tetingkap peribadi Chrome atau Safari dan log masuk dengan akaun UniSZA.</p>
+    <? } ?>
+  </main>
+</body>
 </html>

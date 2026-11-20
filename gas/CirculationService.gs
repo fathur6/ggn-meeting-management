@@ -93,15 +93,17 @@ function changeCirculationStatus(id, revision, action) {
 }
 
 function renderCirculationPage_(id) {
+  let paperId;
   try {
-    const access = circulationAccess_(id);
+    paperId = circulationId_(id);
+    const access = circulationAccess_(paperId);
     const template = HtmlService.createTemplateFromFile('Circulation');
     template.paperId = access.paper.id;
     template.committee = access.paper.committee;
     return template.evaluate().setTitle(access.paper.committee + ' | Pengesahan Edaran')
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
   } catch (error) {
-    return renderRestrictedMeetingPage_(error.message);
+    return renderRestrictedMeetingPage_(error, paperId ? 'view=edaran&id=' + encodeURIComponent(paperId) : '');
   }
 }
 
@@ -197,7 +199,7 @@ function circulationAccess_(id) {
   const roster = circulationRoster_(book, paper.committee);
   const member = roster.some(member => member.email === email);
   if ((!member || paper.status === 'Draf') && !meetingAdmin_(book, email)) {
-    throw new Error('Edaran ini dikhaskan untuk ahli aktif ' + paper.committee + '. Semak akaun UniSZA yang sedang digunakan.');
+    throw new MeetingAccountError_('Edaran ini dikhaskan untuk ahli aktif ' + paper.committee + '. Semak akaun UniSZA yang sedang digunakan.');
   }
   return {paper, records, roster, email};
 }

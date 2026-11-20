@@ -1,6 +1,8 @@
 const MEETING_DOMAIN = /^[^\s@]+@unisza\.edu\.my$/;
 const MEETING_ZONE = 'Asia/Kuala_Lumpur';
 
+class MeetingAccountError_ extends Error {}
+
 function meetingEmail_(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -8,7 +10,7 @@ function meetingEmail_(value) {
 function signedInMeetingEmail_() {
   const email = meetingEmail_(Session.getActiveUser().getEmail());
   if (!MEETING_DOMAIN.test(email)) {
-    throw new Error('Log masuk dengan akaun Google UniSZA. Jika membuka pautan melalui WhatsApp, cuba gunakan pelayar biasa.');
+    throw new MeetingAccountError_('Log masuk dengan akaun Google UniSZA untuk meneruskan.');
   }
   return email;
 }
@@ -67,6 +69,6 @@ function meetingAdmin_(book, email) {
 function requireMeetingAdmin_() {
   const email = signedInMeetingEmail_();
   const book = meetingWorkbook_();
-  if (!meetingAdmin_(book, email)) throw new Error('Halaman pengurusan dikhaskan untuk Urus Setia PPS.');
+  if (!meetingAdmin_(book, email)) throw new MeetingAccountError_('Halaman pengurusan dikhaskan untuk Urus Setia PPS.');
   return {book, email};
 }

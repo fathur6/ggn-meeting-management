@@ -249,7 +249,7 @@ function doGet(e) {
   try {
     access = requireMeetingAdmin_();
   } catch (error) {
-    if (params.view === 'app') return renderRestrictedMeetingPage_(error.message);
+    if (params.view === 'app') return renderRestrictedMeetingPage_(error, 'view=app');
     return createJsonResponse_({ success: false, error: error.message });
   }
   if (params.view === 'app') {
@@ -490,8 +490,13 @@ function createJsonResponse_(obj) {
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }
 
-function renderRestrictedMeetingPage_(message) {
+function renderRestrictedMeetingPage_(error, returnQuery) {
   const template = HtmlService.createTemplateFromFile('AccessDenied');
-  template.message = message || 'Gunakan pautan edaran yang dihantar oleh Urus Setia PPS.';
-  return template.evaluate().setTitle('Akses terhad').addMetaTag('viewport', 'width=device-width, initial-scale=1');
+  template.message = error.message || 'Gunakan pautan edaran yang dihantar oleh Urus Setia PPS.';
+  const url = error instanceof MeetingAccountError_ && returnQuery ? ScriptApp.getService().getUrl() : '';
+  template.signInUrl = url
+    ? 'https://accounts.google.com/AccountChooser?continue=' + encodeURIComponent(url + '?' + returnQuery)
+    : '';
+  return template.evaluate().setTitle(template.signInUrl ? 'Log masuk dengan Google UniSZA' : 'Akses terhad')
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }

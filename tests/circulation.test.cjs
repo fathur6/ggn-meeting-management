@@ -101,7 +101,7 @@ function testEnvironment() {
       createTemplateFromFile(file) {
         return {
           evaluate() {
-            return {file, paperId: this.paperId, committee: this.committee, message: this.message,
+            return {file, paperId: this.paperId, committee: this.committee, message: this.message, signInUrl: this.signInUrl,
               setTitle() { return this; }, addMetaTag() { return this; }};
           },
         };
@@ -145,6 +145,31 @@ test('the portal, existing management RPCs and legacy API require Ahli PPS', () 
   }
   state.user = '';
   assert.match(methods.doGet(navigation).message, /Log masuk/);
+});
+
+test('Google sign-in returns to the requested portal page or ballot', () => {
+  const {methods, state, draft, publish} = testEnvironment();
+  draft();
+  publish();
+  const voting = {view: 'edaran', id: paperId, next: 'https://elsewhere.invalid/'};
+  for (const user of ['', 'personal@gmail.com', jkpsMember]) {
+    state.user = user;
+    for (const [parameter, expected] of [[{view: 'app'}, 'view=app'], [voting, 'view=edaran&id=' + paperId]]) {
+      const page = methods.doGet({parameter});
+      assert.equal(page.file, 'AccessDenied');
+      const signIn = new URL(page.signInUrl);
+      assert.equal(signIn.origin + signIn.pathname, 'https://accounts.google.com/AccountChooser');
+      assert.equal(signIn.searchParams.get('continue'), 'https://example.invalid/exec?' + expected);
+    }
+  }
+  state.user = '';
+  const invalid = methods.doGet({parameter: {...voting, id: 'https://elsewhere.invalid/'}});
+  assert.match(invalid.message, /tidak sah/);
+  assert.equal(invalid.signInUrl, '');
+  state.user = japsuMember;
+  assert.equal(methods.doGet({parameter: voting}).file, 'Circulation');
+  state.bookAccess = 'ANYONE_WITH_LINK';
+  assert.equal(methods.doGet({parameter: voting}).signInUrl, '');
 });
 
 test('a reviewer-readable PDF supports publication and voting while the workbook stays restricted', () => {
