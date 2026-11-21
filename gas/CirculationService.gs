@@ -92,6 +92,125 @@ function changeCirculationStatus(id, revision, action) {
   });
 }
 
+function deleteCirculationDraft(id, revision) {
+  const {book} = requireMeetingAdmin_();
+  id = circulationId_(id);
+  return circulationLocked_(() => {
+    const table = circulationSheet_(book, true);
+    const records = circulationRecords_(book);
+    const paper = findCirculationPaper_(records, id);
+    circulationRevision_(paper, revision);
+    if (paper.status !== 'Draf') throw new Error('Hanya kertas edaran yang belum diterbitkan boleh dibuang.');
+
+    // Remove any stray vote rows first, then the paper itself. Re-read the
+    // records afterwards because deleting a row shifts every row below it.
+    records.filter(row => row.kind === 'UNDI' && row.id === id)
+      .sort((a, b) => b._row - a._row)
+      .forEach(row => table.deleteRow(row._row));
+    const current = findCirculationPaper_(circulationRecords_(book), id);
+    table.deleteRow(current._row);
+    SpreadsheetApp.flush();
+    return {deleted: true, id};
+  });
+}
+
+function exportCirculationVotesPdf(id) {
+  const {book, email} = requireMeetingAdmin_();
+  id = circulationId_(id);
+  const records = circulationRecords_(book);
+  const paper = findCirculationPaper_(records, id);
+  const tally = circulationTally_(paper, records);
+  const votes = records.filter(row => row.kind === 'UNDI' && row.id === id);
+  const roster = circulationRoster_(book, paper.committee);
+  const html = circulationVotesReportHtml_({paper, tally, votes, roster, generatedBy: email});
+  const pdf = Utilities.newBlob(html, MimeType.HTML, 'laporan.html').getAs(MimeType.PDF);
+  return {
+    name: circulationReportName_(paper),
+    mimeType: 'application/pdf',
+    base64: Utilities.base64Encode(pdf.getBytes()),
+  };
+}
+
+function circulationVotesReportHtml_({paper, tally, votes, roster, generatedBy}) {
+  const esc = circulationEscape_;
+  const line = value => esc(value).replace(/\n/g, '<br>');
+  const memberName = email => roster.find(member => member.email === email)?.name || email;
+  const rows = tally.unitStates.map(unit => {
+    const vote = votes.find(row => circulationUnitKey_(row.unit) === unit.key);
+    const representatives = unit.emails.map(memberName).join(', ');
+    const decision = vote ? (vote.decision === 'SOKONG' ? 'Menyokong' : vote.decision === 'BANTAH' ? 'Membantah' : String(vote.decision || '')) : 'Belum mengundi';
+    return '<tr>'
+      + '<td>' + esc(unit.name) + '</td>'
+      + '<td>' + esc(representatives) + '</td>'
+      + '<td class="tag">' + esc(decision) + '</td>'
+      + '<td>' + (vote && vote.reason ? line(vote.reason) : '-') + '</td>'
+      + '<td>' + (vote ? circulationFormatDate_(vote.createdAt) : '-') + '</td>'
+      + '<td>' + (vote ? esc(vote.name || '') + (vote.createdBy ? '<br><span class="muted">' + esc(vote.createdBy) + '</span>' : '') : '-') + '</td>'
+      + '</tr>';
+  }).join('');
+
+  return '<!doctype html><html><head><meta charset="utf-8"><style>'
+    + '@page{size:A4 landscape;margin:12mm}'
+    + 'body{font-family:Arial,Helvetica,sans-serif;color:#1d2b24;font-size:10px;line-height:1.4}'
+    + '.header{background:#104534;color:#fff;padding:16px 20px}'
+    + '.header h1{margin:0;font-size:20px;letter-spacing:.2px}'
+    + '.header p{margin:5px 0 0;font-size:11px}'
+    + '.meta{width:100%;border-collapse:collapse;margin:12px 0}'
+    + '.meta td{padding:3px 6px;vertical-align:top}'
+    + '.meta .label{color:#5d6f64;width:115px}'
+    + 'h2{font-size:13px;margin:15px 0 6px;color:#104534}'
+    + '.summary{width:100%;border-collapse:collapse;margin:6px 0 10px}'
+    + '.summary td{border:1px solid #cfdad3;padding:8px;text-align:center;width:25%}'
+    + '.summary strong{display:block;font-size:18px}'
+    + 'table.votes{width:100%;border-collapse:collapse}'
+    + 'table.votes th{background:#e8f1eb;color:#104534;text-align:left;padding:6px;border:1px solid #cfdad3;font-size:9px}'
+    + 'table.votes td{border:1px solid #dbe5de;padding:6px;vertical-align:top;font-size:9px}'
+    + '.tag{font-weight:bold}.muted{color:#6b7d72;font-size:8px}'
+    + '.footer{margin-top:18px;font-size:9px;color:#5d6f64;border-top:1px solid #cfdad3;padding-top:8px}'
+    + '.sign{margin-top:26px;width:45%}.sign div{border-top:1px solid #1d2b24;margin-top:32px;padding-top:4px}'
+    + '</style></head><body>'
+    + '<div class="header"><h1>Pengesahan Secara Edaran</h1><p>' + esc(paper.committee) + ' &middot; Bukti Maklum Balas Undian</p></div>'
+    + '<table class="meta">'
+    + '<tr><td class="label">Rujukan</td><td><strong>' + esc(paper.reference || '-') + '</strong></td><td class="label">Tarikh jana</td><td>' + circulationFormatDate_(new Date()) + ' MYT</td></tr>'
+    + '<tr><td class="label">Tajuk kertas</td><td colspan="3">' + esc(paper.title || '-') + '</td></tr>'
+    + '<tr><td class="label">Status</td><td>' + esc(circulationStatus_(paper)) + '</td><td class="label">Tarikh tutup</td><td>' + (paper.deadline instanceof Date ? circulationFormatDate_(paper.deadline) : '-') + ' MYT</td></tr>'
+    + '<tr><td class="label">Maklumat jawatankuasa</td><td colspan="3">' + line(paper.context || '-') + '</td></tr>'
+    + '<tr><td class="label">Perkara untuk pertimbangan</td><td colspan="3">' + line(paper.summary || '-') + '</td></tr>'
+    + '</table>'
+    + '<h2>Ringkasan undian</h2>'
+    + '<table class="summary"><tr>'
+    + '<td><strong>' + tally.summary.total + '</strong>Unit edaran</td>'
+    + '<td><strong>' + tally.summary.support + '</strong>Menyokong</td>'
+    + '<td><strong>' + tally.summary.oppose + '</strong>Membantah</td>'
+    + '<td><strong>' + tally.summary.waiting + '</strong>Belum mengundi</td>'
+    + '</tr></table>'
+    + '<h2>Maklum balas mengikut unit</h2>'
+    + '<table class="votes"><thead><tr><th>Unit</th><th>Wakil</th><th>Undi</th><th>Sebab bantahan</th><th>Masa direkod</th><th>Direkod oleh</th></tr></thead><tbody>'
+    + (rows || '<tr><td colspan="6">Tiada unit edaran direkodkan.</td></tr>')
+    + '</tbody></table>'
+    + '<div class="footer">Dokumen ini dijana secara automatik daripada sistem UGS Meeting Management pada ' + circulationFormatDate_(new Date()) + ' MYT oleh ' + esc(generatedBy) + '. Rekod undian hendaklah disimpan sebagai bukti rasmi jawatankuasa.</div>'
+    + '<div class="sign"><div>Tandatangan Urus Setia</div></div>'
+    + '</body></html>';
+}
+
+function circulationReportName_(paper) {
+  const label = paper.reference || paper.title || 'Edaran';
+  const stamp = Utilities.formatDate(new Date(), MEETING_ZONE, 'yyyy-MM-dd HHmmss');
+  return (paper.committee + ' - ' + label + ' - Bukti Undian - ' + stamp)
+    .replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim().slice(0, 180) + '.pdf';
+}
+
+function circulationFormatDate_(value) {
+  if (!(value instanceof Date) || isNaN(value.getTime())) return '-';
+  return Utilities.formatDate(value, MEETING_ZONE, 'dd/MM/yyyy HH:mm');
+}
+
+function circulationEscape_(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[character]));
+}
+
 function renderCirculationPage_(id) {
   let paperId;
   try {
@@ -213,8 +332,16 @@ function circulationRoster_(book, committee) {
   return meetingRoster_(book, 'Ahli ' + circulationCommittee_(committee));
 }
 
+// Faculties and institutes vote by default. Selected centres may also hold one
+// seat when the committee explicitly includes them in a circulation paper.
+const CIRCULATION_EXTRA_UNITS = [
+  'pusat kecemerlangan dan inovasi akademik (comae-i)',
+  'pusat pemindahan ilmu dan pendidikan berterusan',
+];
+
 function isCirculationUnit_(unit) {
-  return /^(fakulti|institut)\s/i.test(unit);
+  const key = circulationUnitKey_(unit);
+  return /^(fakulti|institut)\s/i.test(unit) || CIRCULATION_EXTRA_UNITS.includes(key);
 }
 
 function circulationUnitKey_(unit) {

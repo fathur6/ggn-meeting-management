@@ -18,7 +18,7 @@
       </div>
       <p class="note" id="circulation-pdf-note">Pastikan ahli jawatankuasa dan penyemak yang berkenaan boleh membuka pautan PDF.</p>
       <fieldset class="edaran-seats">
-        <legend>Wakil fakulti dan institut</legend>
+        <legend>Wakil fakulti, institut dan pusat terpilih</legend>
         <p class="note">Tandakan wakil yang boleh mengundi. Jika beberapa wakil dilantik untuk satu unit, sistem merekodkan satu undi untuk unit itu.</p>
         <label class="edaran-filter">Cari nama atau unit<input id="circulation-filter" type="search"></label>
         <p class="note" id="circulation-seat-count" aria-live="polite"></p>
@@ -89,8 +89,9 @@
     return node;
   }
 
-  function action(text, callback, secondary = true) {
-    const button = element('button', text, secondary ? 'secondary' : '');
+  function action(text, callback, secondary = true, danger = false) {
+    const classes = [secondary ? 'secondary' : '', danger ? 'danger' : ''].filter(Boolean).join(' ');
+    const button = element('button', text, classes);
     button.type = 'button';
     button.addEventListener('click', callback);
     return button;
@@ -112,7 +113,7 @@
         const td = element('td', '');
         const controls = element('div', '', 'edaran-actions');
         if (paper.status === 'Draf') {
-          controls.append(action('Sunting', () => openEditor(paper)), action('Terbitkan', () => changeStatus(paper, 'Terbit'), false));
+          controls.append(action('Sunting', () => openEditor(paper)), action('Terbitkan', () => changeStatus(paper, 'Terbit'), false), action('Buang', () => deleteDraft(paper), true, true));
         } else {
           if (paper.link) {
             const link = element('a', 'Buka edaran ↗', 'edaran-link');
@@ -121,6 +122,7 @@
             link.rel = 'noopener noreferrer';
             controls.append(link, action('Salin pautan', () => copyLink(paper.link)));
           }
+          controls.append(action('Muat turun PDF', () => downloadReport(paper)));
           if (paper.status === 'Dibuka') controls.append(action('Tutup undian', () => changeStatus(paper, 'Tutup')));
         }
         td.append(controls);
@@ -233,6 +235,47 @@
       if (paper.id === state.paper?.id) byId('editor').hidden = true;
       tell(next === 'Terbit' ? 'Edaran diterbitkan. Salin pautan untuk dikongsi kepada ahli.' : 'Undian ditutup.');
       await load();
+    } catch (error) {
+      tell(error.message || String(error), true);
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function deleteDraft(paper) {
+    if (state.busy) return;
+    if (!window.confirm('Buang draf "' + paper.title + '"? Tindakan ini tidak boleh dibatalkan.')) return;
+    state.busy = true;
+    try {
+      await rpc('deleteCirculationDraft', paper.id, paper.revision);
+      if (paper.id === state.paper?.id) byId('editor').hidden = true;
+      tell('Draf kertas edaran telah dibuang.');
+      await load();
+    } catch (error) {
+      tell(error.message || String(error), true);
+    } finally {
+      state.busy = false;
+    }
+  }
+
+  async function downloadReport(paper) {
+    if (state.busy) return;
+    state.busy = true;
+    tell('Menyediakan laporan PDF…');
+    try {
+      const report = await rpc('exportCirculationVotesPdf', paper.id);
+      const bytes = Uint8Array.from(atob(report.base64), character => character.charCodeAt(0));
+      const blob = new Blob([bytes], {type: report.mimeType || 'application/pdf'});
+      const url = URL.createObjectURL(blob);
+      const link = element('a', 'Muat turun ' + report.name, 'edaran-link');
+      link.href = url;
+      link.download = report.name;
+      const notice = byId('status');
+      notice.textContent = 'Laporan undian sedia dimuat turun. ';
+      notice.classList.remove('edaran-error');
+      notice.append(link);
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
     } catch (error) {
       tell(error.message || String(error), true);
     } finally {

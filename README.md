@@ -10,7 +10,7 @@ The new management portal is served from the same deployment at:
 https://script.google.com/macros/s/DEPLOYMENT_ID/exec?view=app
 ```
 
-The management portal includes meeting settings and invitations, committee rosters, live attendance and **Pengesahan Edaran**. The portal and its management API use the signed-in UniSZA account and the `Ahli PPS` roster. The extension's `syncLiveAttendance` action uses its dedicated token. The extension receives only a success response.
+The management portal includes meeting settings and invitations, committee rosters, live attendance and **Pengesahan Edaran**. The portal and its management API use the signed-in UniSZA account and the `Ahli PPS` roster. The extension's `syncLiveAttendance` action uses its dedicated token. The extension receives only a success response. See [Google sign-in and access control](#google-sign-in-and-access-control) for the full sign-in flow and the difference between the deployment settings and the application checks.
 
 The dashboard counts attendance against the official `Ahli JKPS` roster in the configured spreadsheet. The current roster has 35 eligible members, so quorum is 24 seats (`ceil(2 x 35 / 3)`). Each new meeting stores its eligible-member count and quorum threshold at creation, preserving historical results after later roster changes.
 
@@ -31,10 +31,43 @@ Apps Script cannot reuse the UniSZA SSO session held in a browser. The included 
 1. Follow [GitHub and Apps Script releases](#github-and-apps-script-releases) to review and upload the project.
 2. In the Apps Script editor, run `initializeApp` once and authorize it. This creates `JKPS Live Attendance` and `JKPS Representation Rules`.
 3. Set a new random token of at least 24 characters in the Script Property `JKPS_LIVE_SYNC_TOKEN`. Put its matching value in a local copy of the Chrome extension's `config.js` and keep that copy out of Git. The application requires the property before accepting sync requests.
-4. Deploy the web app as a UniSZA account with access to the official workbook. Use **Execute as me**. The extension posts to the shared deployment without an interactive Google login, so the manifest retains that transport. All human-facing routes and management methods check a verified UniSZA session inside Apps Script. Test with the intended administrator and a separate committee member before distributing links.
+4. Deploy the web app as a UniSZA account with access to the official workbook. Use **Execute as me**. The extension posts to the shared deployment without an interactive Google login, so the manifest retains that transport. All human-facing routes check `Session.getActiveUser()` and the relevant roster inside Apps Script; see [Google sign-in and access control](#google-sign-in-and-access-control). Test with the intended administrator and a separate committee member before distributing links.
 5. In Chrome, open `chrome://extensions`, enable Developer mode, select **Load unpacked**, and choose `chrome-extension`.
 6. Open the extension, enter the web-app `/exec` URL and the token, then keep the authenticated eMeeting attendance report open during the meeting.
 7. Fill `JKPS Representation Rules` for faculties that may send a representative. Enter the faculty label exactly as it appears in eMeeting and the represented member's email from `Ahli JKPS`.
+
+## Google sign-in and access control
+
+The web app is deployed with **Execute as me** (`USER_DEPLOYING`) and **Anyone** access (`ANYONE_ANONYMOUS`). Those deployment settings let the app open for any visitor and let Drive, Sheets and Gmail calls run as the deployment owner. They are **not** the access-control layer. Every human-facing route checks the Google account the browser presents to Apps Script.
+
+### What the app checks
+
+| Surface | Who may use it | Check |
+| --- | --- | --- |
+| Admin portal `?view=app` | `Ahli PPS` | `requireMeetingAdmin_()` requires `Session.getActiveUser().getEmail()` to be in `Ahli PPS` |
+| Circulation page `?view=edaran&id=...` | Active members of the paper's committee, or `Ahli PPS` | `circulationAccess_()`; drafts are admin-only |
+| Voting | The selected delegate for a unit | `submitCirculationVote()` re-checks the live roster and the unit before recording the vote |
+| Extension `syncLiveAttendance` | The extension token | `JKPS_LIVE_SYNC_TOKEN`; this is separate from Google login |
+
+Only addresses matching `@unisza.edu.my` are accepted. Admin status comes from the `Ahli PPS` sheet, not a hard-coded list.
+
+### Sign-in flow
+
+1. Open the deployment URL shown under **Deploy → Manage deployments**. For a Workspace deployment it normally has the form `https://script.google.com/a/macros/unisza.edu.my/s/<deployment-id>/exec?...`. The `/a/unisza.edu.my/` form lets the browser present the Workspace identity to `Session.getActiveUser()`.
+2. If the app cannot read a UniSZA email, it renders **Log masuk ke portal** with a **Pilih akaun Google UniSZA** button.
+3. That button opens Google's account chooser with a `continue` URL back to the same page. Choose the `@unisza.edu.my` account.
+4. The app reloads, reads `Session.getActiveUser().getEmail()`, and checks the relevant roster.
+5. If the account is valid but not authorised, the app shows a role-specific message such as **Akses terhad** or **Halaman pengurusan dikhaskan untuk Urus Setia PPS**. Use the same account-chooser button to switch accounts.
+
+`Session.getActiveUser()` can be empty when the viewer is signed out, signed in with a personal account, outside the UniSZA Workspace, or when a Workspace policy hides the active email. In that case the app cannot grant access. Test the actual `/exec` link with a representative's UniSZA account; a private browser window is the most reliable way to switch accounts.
+
+### Operational notes
+
+- Keep the deployment as **Execute as me** (`USER_DEPLOYING`). Changing it to `USER_ACCESSING` would require every viewer to authorise Drive, Sheets and Gmail and would break the extension's shared transport.
+- Keep the official workbook **Restricted**. The app refuses to process requests when the workbook's general access is not private.
+- The deployment owner must run `checkMeetingDriveAccess` once after a new Drive scope is added and approve the consent. If an existing grant is reused after a scope change, run `ScriptApp.invalidateAuth()` from a temporary editor function, then run `checkMeetingDriveAccess` again. Otherwise the portal shows **Kebenaran portal diperlukan**.
+- Add or remove administrators in `Ahli PPS`; the next request reads the current roster. Do not replace the roster check with a hard-coded email list.
+- The extension token is independent of Google login. Do not reuse a user's Google session for the extension, and keep `JKPS_LIVE_SYNC_TOKEN` out of Git.
 
 ## GitHub and Apps Script releases
 
@@ -82,7 +115,7 @@ script_id=$(node -p "require('./.clasp.json').scriptId")
 diff -ru "$review_dir/gas" gas
 ```
 
-After reviewing the differences, use `clasp push` to update the script project. When the project requests new permissions, the owner of the existing deployment must open the Apps Script editor, run `checkMeetingDriveAccess`, and grant read access to Drive. A successful run confirms that the account can verify the official workbook's sharing settings and open it. Test the uploaded code with **Deploy → Test deployments**. When it passes, create a version and update the existing deployment. Use the version number returned by `create-version` and the web app's deployment ID recorded earlier.
+After reviewing the differences, use `clasp push` to update the script project. When the project requests new permissions, the owner of the existing deployment must open the Apps Script editor, run `checkMeetingDriveAccess`, and grant the requested access. If a new scope was added but Apps Script keeps reusing the old grant, run `ScriptApp.invalidateAuth()` once from a temporary editor function and then run `checkMeetingDriveAccess` again. A successful run confirms that the account can verify the official workbook's sharing settings and open it. Test the uploaded code with **Deploy → Test deployments**. When it passes, create a version and update the existing deployment. Use the version number returned by `create-version` and the web app's deployment ID recorded earlier.
 
 ```sh
 clasp push
@@ -129,9 +162,9 @@ JKPS quorum, meeting calls, and annual attendance exclude `Lepas` members from n
 
 1. In the official spreadsheet, set General access to **Restricted** and review direct shares. Give edit access only to trusted PPS staff because the workbook contains `Ahli PPS`, authorization rosters and votes. The application checks the workbook's general sharing setting before processing requests.
 2. As a member of **Ahli PPS**, open the deployed web app with `?view=app` and choose **Pengesahan Edaran → Kertas baharu**.
-3. Choose JKPS or JAPSU. Enter the circulation reference, proposal title, committee information, matters for consideration, Google Drive PDF link and the closing time in Malaysia. Confirm the voting representatives against the selected committee's live roster. Each selected faculty or institute gets one vote even when multiple delegates are approved.
-4. Save the draft and choose **Terbitkan**. Google Drive controls who can open the PDF. A directly shared file or a reviewer-readable link both work. Check that the intended readers can open it. Publishing requires a reference, summary, valid PDF, a future deadline, and at least one unit. The draft becomes read-only after publication. The admin can close voting early, and the deadline stops further responses.
-5. Copy the generated link for email or WhatsApp. It opens a standalone member page for this paper. A representative who needs to sign in or switch accounts can select **Pilih akaun Google UniSZA** to use Google's account chooser and return to the same paper. The relevant committee's active roster can view the circulation and tally. The chosen representatives can vote for their unit. A person's current membership and unit are checked again when they vote. Admin authorization comes from `Ahli PPS`, including when an admin is also a committee member.
+3. Choose JKPS or JAPSU. Enter the circulation reference, proposal title, committee information, matters for consideration, Google Drive PDF link and the closing time in Malaysia. Confirm the voting representatives against the selected committee's live roster. Each selected faculty, institute or approved centre gets one vote even when multiple delegates are approved. Centres outside the default faculty/institute rule are listed in `CIRCULATION_EXTRA_UNITS` in `CirculationService.gs`.
+4. Save the draft and choose **Terbitkan**. Google Drive controls who can open the PDF. A directly shared file or a reviewer-readable link both work. Check that the intended readers can open it. Publishing requires a reference, summary, valid PDF, a future deadline, and at least one unit. The draft becomes read-only after publication. The admin can close voting early, and the deadline stops further responses. The admin list also provides **Muat turun PDF** for a timestamped evidence report of the current tally and **Buang** for a draft that has not been published. Published papers cannot be deleted.
+5. Copy the generated link for email or WhatsApp. It opens a standalone member page for this paper. A representative who needs to sign in or switch accounts can select **Pilih akaun Google UniSZA** to use Google's account chooser and return to the same paper; see [Google sign-in and access control](#google-sign-in-and-access-control). The relevant committee's active roster can view the circulation and tally. The chosen representatives can vote for their unit. A person's current membership and unit are checked again when they vote. Admin authorization comes from `Ahli PPS`, including when an admin is also a committee member.
 6. The application creates **Pengesahan Edaran** in the official spreadsheet on the first draft save. The one tab holds `KERTAS` and `UNDI` records. It retains the draft revision, published representatives, vote, reason for objection, verified voter email, timestamps and email status. The member page returns unit-level results and the viewer's own voting options. It keeps individual voting records in the spreadsheet.
 
 ### Deployment verification
@@ -141,6 +174,8 @@ Run the local authorization and voting checks with `node --test tests/circulatio
 - With an `Ahli PPS` account, verify existing meeting and roster pages and save a test draft in the circulation tab.
 - As a plain committee member, verify the administration page and management API reject access. Check that a draft and another committee's circulation are inaccessible.
 - Publish a test paper with a PDF shared with the intended readers. Verify the PDF, support and objection paths, required objection reason, receipt, unit tally, repeated submission and voting cutoff.
+- Download the vote evidence PDF and verify that it includes the current tally, every unit, the recorded vote or **Belum mengundi**, and a timestamped filename.
+- Create a temporary draft, click **Buang**, and confirm the row disappears. A published paper must not offer the delete action.
 - Verify the separately configured eMeeting sync extension still records attendance. Use a prior version of the deployment as the rollback point.
 
 A deployment account from outside UniSZA or a Workspace policy that hides the active email will cause sign-in checks to fail. Test the actual `/exec` link with a representative's Google Workspace account. [Apps Script session documentation](https://developers.google.com/apps-script/reference/base/session)
