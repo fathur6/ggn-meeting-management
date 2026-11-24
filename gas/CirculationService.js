@@ -25,9 +25,34 @@ function getCirculationAdmin() {
 
 function getCirculationCandidates(committee) {
   const {book} = requireMeetingAdmin_();
-  const candidates = circulationRoster_(book, committee).filter(member => isCirculationUnit_(member.unit));
+  const canonical = circulationCanonicalUnits_(book, committee);
+  const candidates = circulationRoster_(book, committee)
+    .filter(member => isCirculationUnit_(member.unit))
+    // Use the paper committee's spelling so members of the same unit from two
+    // rosters land in one group.
+    .map(member => ({...member, unit: circulationCanonicalUnit_(canonical, member.unit)}));
   const unique = new Map(candidates.map(member => [circulationUnitKey_(member.unit) + '|' + member.email, member]));
   return [...unique.values()].sort((a, b) => a.unit.localeCompare(b.unit) || a.name.localeCompare(b.name));
+}
+
+function circulationCanonicalUnits_(book, committee) {
+  const canonical = new Map();
+  meetingRoster_(book, 'Ahli ' + circulationCommittee_(committee)).forEach(member => {
+    const name = String(member.unit || '').replace(/\s+/g, ' ').trim();
+    const alias = circulationUnitAlias_(name);
+    if (alias && !canonical.has(alias)) canonical.set(alias, name);
+  });
+  return canonical;
+}
+
+function circulationCanonicalUnit_(canonical, unit) {
+  const name = String(unit || '').replace(/\s+/g, ' ').trim();
+  const exact = canonical.get(circulationUnitAlias_(name));
+  if (exact) return exact;
+  for (const [alias, stored] of canonical) {
+    if (circulationUnitsMatch_(alias, name)) return stored;
+  }
+  return name;
 }
 
 /**
@@ -45,12 +70,7 @@ function getCirculationVotes(id) {
 
 function circulationVotesPayload_(book, paper, records, actor) {
   const roster = circulationRoster_(book, paper.committee).filter(member => isCirculationUnit_(member.unit));
-  const candidatesByUnit = new Map();
-  roster.forEach(member => {
-    const key = circulationUnitKey_(member.unit);
-    if (!candidatesByUnit.has(key)) candidatesByUnit.set(key, []);
-    candidatesByUnit.get(key).push(member);
-  });
+
   const tally = circulationTally_(paper, records, roster);
   const states = new Map(tally.unitStates.map(unit => [unit.key, unit]));
   const isOpen = paper.status === 'Dibuka';
@@ -63,7 +83,7 @@ function circulationVotesPayload_(book, paper, records, actor) {
     const deciding = records.filter(row => row.kind === 'UNDI' && row.id === paper.id
       && circulationUnitKey_(row.unit) === unit.key
       && (!state.decidedBy || meetingEmail_(row.createdBy) === state.decidedBy)).pop() || null;
-    const candidates = (candidatesByUnit.get(unit.key) || [])
+    const candidates = roster.filter(member => circulationUnitsMatch_(member.unit, unit.name))
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(member => ({
         email: member.email, name: member.name, role: member.role,
@@ -158,7 +178,7 @@ function saveCirculationDelegates(id, revision, candidates) {
     circulationRevision_(paper, revision);
     if (paper.status !== 'Dibuka') throw new Error('Wakil boleh diubah semasa undian dibuka. Draf disunting melalui borang kertas.');
     const roster = circulationRoster_(book, paper.committee);
-    const delegates = circulationDelegates_(roster, candidates);
+    const delegates = circulationDelegates_(roster, candidates, readCirculationDelegates_(paper));
     const voted = new Map(records
       .filter(row => row.kind === 'UNDI' && row.id === id)
       .map(row => [circulationUnitKey_(row.unit), row]));
@@ -228,13 +248,14 @@ function saveCirculationDraft(form) {
   const pdf = form.pdf ? circulationPdf_(form.pdf).view : '';
   const deadline = form.deadline ? circulationDeadline_(form.deadline) : '';
   const roster = circulationRoster_(book, committee);
-  const delegates = circulationDelegates_(roster, form.candidates);
 
   return circulationLocked_(() => {
     const table = circulationSheet_(book, true);
     const current = circulationRecords_(book).find(row => row.kind === 'KERTAS' && row.id === id);
     circulationRevision_(current, form.revision);
     if (current && current.status !== 'Draf') throw new Error('Kandungan edaran diterbitkan telah dimuktamadkan.');
+    // Existing units keep their stored name and key while the draft is edited.
+    const delegates = circulationDelegates_(roster, form.candidates, current ? readCirculationDelegates_(current) : []);
 
     const now = new Date();
     const paper = {
@@ -613,24 +634,67 @@ function isCirculationUnit_(unit) {
   return /^(fakulti|institut)\s/i.test(unit) || CIRCULATION_EXTRA_UNITS.includes(key);
 }
 
+// Stored key for a unit. Votes and delegate rows are keyed by it, so it must stay
+// stable for existing papers.
 function circulationUnitKey_(unit) {
   return String(unit || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
-function hasCirculationSeat_(roster, key, email) {
-  return roster.some(member => member.email === email && circulationUnitKey_(member.unit) === key);
+// Matching alias: the two rosters spell the same unit differently ("&" vs "dan",
+// "Rekabentuk" vs "Reka Bentuk", punctuation). Used only to compare roster rows
+// with a unit, never stored.
+function circulationUnitAlias_(unit) {
+  return String(unit || '')
+    .replace(/&/g, ' dan ')
+    .replace(/\brekabentuk\b/gi, ' reka bentuk ')
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
 }
 
-function circulationDelegates_(roster, candidates) {
+// Same unit across two rosters: identical after normalisation, or one keystroke
+// apart ("Melayu Islan" vs "Melayu Islam"). Short names must match exactly so
+// unrelated units never merge.
+function circulationUnitsMatch_(left, right) {
+  const a = circulationUnitAlias_(left);
+  const b = circulationUnitAlias_(right);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return a.length >= 12 && b.length >= 12 && circulationEditDistance_(a, b) <= 1;
+}
+
+function circulationEditDistance_(a, b) {
+  let previous = Array.from({length: b.length + 1}, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++) {
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    previous = current;
+  }
+  return previous[b.length];
+}
+
+function hasCirculationSeat_(roster, key, email) {
+  return roster.some(member => member.email === email && circulationUnitsMatch_(member.unit, key));
+}
+
+function circulationDelegates_(roster, candidates, existing) {
   if (!Array.isArray(candidates) || candidates.length > 160) throw new Error('Senarai wakil tidak sah.');
   const units = new Map();
+  // Units already on the paper keep their stored name and key, so a member whose
+  // roster spells the unit differently is folded into the same unit.
+  const stored = existing || [];
   for (const candidate of candidates) {
     const email = meetingEmail_(candidate?.email);
-    const key = circulationUnitKey_(candidate?.unit);
-    const member = roster.find(member => member.email === email && isCirculationUnit_(member.unit)
-      && circulationUnitKey_(member.unit) === key);
+    const member = roster.find(entry => entry.email === email && isCirculationUnit_(entry.unit)
+      && circulationUnitsMatch_(entry.unit, candidate?.unit));
     if (!member) throw new Error('Wakil tidak lagi sepadan dengan daftar aktif. Muat semula senarai wakil.');
-    if (!units.has(key)) units.set(key, {key, name: member.unit, emails: []});
+    const kept = stored.find(unit => circulationUnitsMatch_(unit.name, candidate?.unit));
+    const name = kept ? kept.name : String(candidate?.unit || member.unit).replace(/\s+/g, ' ').trim();
+    const key = kept ? kept.key : circulationUnitKey_(name);
+    if (!units.has(key)) units.set(key, {key, name, emails: []});
     const emails = units.get(key).emails;
     if (!emails.includes(email)) emails.push(email);
   }
@@ -679,7 +743,7 @@ function isCirculationDeanRole_(role) {
 }
 
 function circulationDeanEmail_(roster, key) {
-  const dean = roster.find(member => circulationUnitKey_(member.unit) === key && isCirculationDeanRole_(member.role));
+  const dean = roster.find(member => circulationUnitsMatch_(member.unit, key) && isCirculationDeanRole_(member.role));
   return dean ? meetingEmail_(dean.email) : '';
 }
 

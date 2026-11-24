@@ -418,3 +418,88 @@ test('candidates include JKPS members as well as the paper committee', () => {
   assert.equal(unit.vote, 'SOKONG');
   assert.equal(unit.votedBy, jkpsMember);
 });
+
+test('roster spelling variants keep one unit and expose its JKPS member', () => {
+  const {methods, data, state, draft, publish, vote} = testEnvironment();
+  const frit = 'Fakulti Reka Bentuk Inovatif dan Teknologi';
+  const fritJkps = 'Fakulti Rekabentuk Inovatif dan Teknologi';
+  const institute = 'Institut Penyelidikan Produk & Ketamadunan Melayu Islam';
+  const instituteJkps = 'Institut Penyelidikan Produk dan Ketamadunan Melayu Islam';
+  const deanFrit = 'frit.dekan@unisza.edu.my';
+  const timbalanFrit = 'frit.timbalan@unisza.edu.my';
+  const pengarah = 'inspire.pengarah@unisza.edu.my';
+  const timbalanPengarah = 'inspire.timbalan@unisza.edu.my';
+  data['Ahli JAPSU'].push(
+    [6, 'Dekan FRIT', 'Dekan', frit, deanFrit, '', '', 'Aktif'],
+    [7, 'Pengarah INSPIRE', 'Pengarah', institute, pengarah, '', '', 'Aktif'],
+  );
+  data['Ahli JKPS'].push(
+    [2, 'Timb Dekan FRIT', 'Timbalan Dekan (Akademik & Siswazah)', fritJkps, timbalanFrit, '', '', 'Aktif'],
+    [3, 'Timb Pengarah INSPIRE', 'Timbalan Pengarah', instituteJkps, timbalanPengarah, '', '', 'Aktif'],
+  );
+
+  state.user = admin;
+  const candidates = methods.getCirculationCandidates('JAPSU');
+  const fritUnits = new Set(candidates.filter(member => [deanFrit, timbalanFrit].includes(member.email)).map(member => member.unit));
+  assert.deepEqual([...fritUnits], [frit], 'both FRIT members share the committee spelling');
+  const instituteUnits = new Set(candidates.filter(member => [pengarah, timbalanPengarah].includes(member.email)).map(member => member.unit));
+  assert.deepEqual([...instituteUnits], [institute], 'both INSPIRE members share the committee spelling');
+
+  draft({candidates: [
+    {unit: frit, email: deanFrit}, {unit: frit, email: timbalanFrit},
+    {unit: faculty, email: japsuMember}, {unit: secondFaculty, email: otherFaculty},
+  ]});
+  publish();
+  state.user = admin;
+  const stored = methods.getCirculationVotes(paperId).units;
+  assert.equal(stored.filter(unit => unit.name === frit).length, 1, 'FRIT is a single unit');
+  assert.equal(stored.find(unit => unit.name === frit).emails.includes(timbalanFrit), true);
+
+  state.user = timbalanFrit;
+  assert.ok(vote({unit: frit, vote: 'SOKONG'}).id);
+
+  // Adding the INSPIRE deputy to an open paper creates that unit once.
+  state.user = 'fathurrahman@unisza.edu.my';
+  data['Ahli PPS'].push([2, 'TDA PPS', 'TDA_PPS', 'Pusat Pengajian Siswazah', state.user]);
+  const revision = methods.getCirculationVotes(paperId).paper.revision;
+  const saved = methods.saveCirculationDelegates(paperId, revision, [
+    {unit: frit, email: deanFrit}, {unit: frit, email: timbalanFrit},
+    {unit: faculty, email: japsuMember}, {unit: secondFaculty, email: otherFaculty},
+    {unit: institute, email: pengarah}, {unit: institute, email: timbalanPengarah},
+  ]);
+  assert.equal(saved.revision, revision + 1);
+  state.user = admin;
+  const updated = methods.getCirculationVotes(paperId).units;
+  assert.equal(updated.filter(unit => unit.name === institute).length, 1);
+  assert.equal(updated.find(unit => unit.name === institute).emails.length, 2);
+});
+
+test('a one-character typo in a stored unit still exposes its roster members', () => {
+  const {methods, data, state, draft, publish} = testEnvironment();
+  const stored = 'Institut Penyelidikan Produk & Ketamadunan Melayu Islan';
+  const roster = 'Institut Penyelidikan Produk dan Ketamadunan Melayu Islam';
+  const pengarah = 'inspire.pengarah@unisza.edu.my';
+  const timbalan = 'inspire.timbalan@unisza.edu.my';
+  data['Ahli JAPSU'].push([6, 'Pengarah INSPIRE', 'Pengarah', stored, pengarah, '', '', 'Aktif']);
+  data['Ahli JKPS'].push([2, 'Timb Pengarah INSPIRE', 'Timbalan Pengarah', roster, timbalan, '', '', 'Aktif']);
+
+  draft({candidates: [
+    {unit: stored, email: pengarah}, {unit: faculty, email: japsuMember}, {unit: secondFaculty, email: otherFaculty},
+  ]});
+  publish();
+  state.user = admin;
+  const unit = methods.getCirculationVotes(paperId).units.find(entry => /Produk/.test(entry.name));
+  assert.equal(unit.candidates.some(candidate => candidate.email === timbalan), true, 'deputy offered despite the typo');
+
+  data['Ahli PPS'].push([2, 'TDA PPS', 'TDA_PPS', 'Pusat Pengajian Siswazah', 'fathurrahman@unisza.edu.my']);
+  state.user = 'fathurrahman@unisza.edu.my';
+  const revision = methods.getCirculationVotes(paperId).paper.revision;
+  methods.saveCirculationDelegates(paperId, revision, [
+    {unit: stored, email: pengarah}, {unit: stored, email: timbalan},
+    {unit: faculty, email: japsuMember}, {unit: secondFaculty, email: otherFaculty},
+  ]);
+  state.user = timbalan;
+  assert.ok(methods.submitCirculationVote({
+    paperId, requestId: randomUUID(), unit: stored, vote: 'SOKONG', name: 'Timb Pengarah', email: timbalan, receipt: false,
+  }).id);
+});
