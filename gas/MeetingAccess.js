@@ -103,6 +103,29 @@ function requireMeetingTdaPps_() {
   return access;
 }
 
+// Super administrators may change the voting representatives of a paper that is
+// already open, so a missing seat holder can still be added. Deleting papers and
+// appointing administrators stay with the TDA PPS alone.
+const MEETING_SUPER_ADMIN_EMAILS = [
+  'fathurrahman@unisza.edu.my',
+  'yusnitayusof@unisza.edu.my',
+  'fairuznasir@unisza.edu.my',
+  'fatinhannani@unisza.edu.my',
+];
+
+function isMeetingSuperAdmin_(email) {
+  const target = meetingEmail_(email);
+  return Boolean(target) && MEETING_SUPER_ADMIN_EMAILS.includes(target);
+}
+
+function requireMeetingSuperAdmin_() {
+  const access = requireMeetingAdmin_();
+  if (!isMeetingSuperAdmin_(access.email)) {
+    throw new MeetingAccountError_('Tindakan ini dikhaskan untuk pentadbir utama PPS.');
+  }
+  return access;
+}
+
 function requireMeetingAdmin_() {
   const email = signedInMeetingEmail_();
   const book = meetingWorkbook_();

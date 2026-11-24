@@ -18,7 +18,7 @@ function getCirculationAdmin() {
     canDelete: isMeetingTdaPps_(email),
     papers: entries.filter(row => row.kind === 'KERTAS').reverse().map(paper => ({
       ...adminPaper_(paper),
-      tally: circulationTally_(paper, entries).summary,
+      tally: circulationTally_(paper, entries, circulationRoster_(book, paper.committee)).summary,
     })),
   };
 }
@@ -51,31 +51,40 @@ function circulationVotesPayload_(book, paper, records, actor) {
     if (!candidatesByUnit.has(key)) candidatesByUnit.set(key, []);
     candidatesByUnit.get(key).push(member);
   });
-  const votes = new Map(records
-    .filter(row => row.kind === 'UNDI' && row.id === paper.id)
-    .map(row => [circulationUnitKey_(row.unit), row]));
+  const tally = circulationTally_(paper, records, roster);
+  const states = new Map(tally.unitStates.map(unit => [unit.key, unit]));
   const isOpen = paper.status === 'Dibuka';
   const tda = isMeetingTdaPps_(actor);
 
   const units = readCirculationDelegates_(paper).map(unit => {
-    const vote = votes.get(unit.key) || null;
+    const state = states.get(unit.key) || {};
+    // The vote that decided the unit: the Dean's when they voted, otherwise the
+    // representative's.
+    const deciding = records.filter(row => row.kind === 'UNDI' && row.id === paper.id
+      && circulationUnitKey_(row.unit) === unit.key
+      && (!state.decidedBy || meetingEmail_(row.createdBy) === state.decidedBy)).pop() || null;
     const candidates = (candidatesByUnit.get(unit.key) || [])
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(member => ({
         email: member.email, name: member.name, role: member.role,
         selected: unit.emails.includes(member.email),
+        // The representative who recorded the vote must stay seated.
+        voter: Boolean(deciding) && meetingEmail_(deciding.createdBy) === meetingEmail_(member.email),
+        dean: isCirculationDeanRole_(member.role),
       }));
     return {
       key: unit.key,
       name: unit.name,
       emails: unit.emails,
       candidates,
-      vote: vote ? vote.decision : '',
-      reason: vote ? vote.reason : '',
-      votedBy: vote ? vote.createdBy : '',
-      votedAt: circulationStamp_(vote && vote.createdAt),
-      changedBy: vote ? vote.updatedBy : '',
-      changedAt: circulationStamp_(vote && vote.updatedAt),
+      vote: state.vote || '',
+      byDean: Boolean(state.byDean),
+      superseded: state.superseded || null,
+      reason: deciding ? deciding.reason : '',
+      votedBy: deciding ? meetingEmail_(deciding.createdBy) : '',
+      votedAt: circulationStamp_(deciding && deciding.createdAt),
+      changedBy: deciding ? deciding.updatedBy : '',
+      changedAt: circulationStamp_(deciding && deciding.updatedAt),
     };
   });
 
@@ -85,11 +94,11 @@ function circulationVotesPayload_(book, paper, records, actor) {
       status: paper.status, statusLabel: circulationStatus_(paper),
       revision: Number(paper.revision), isOpen,
     },
-    summary: circulationTally_(paper, records).summary,
+    summary: tally.summary,
     units,
-    // Changing a representative is allowed while the poll is open; a unit that has
-    // already voted keeps the representatives it voted with.
-    canEditDelegates: isOpen,
+    // Only a PPS super administrator may change representatives on an open paper;
+    // adding one to a unit that already voted is allowed, dropping the voter is not.
+    canEditDelegates: isMeetingSuperAdmin_(actor) && isOpen,
     canOverride: tda && isOpen,
   };
 }
@@ -140,7 +149,7 @@ function overrideCirculationVote(id, unitKey, decision, reason) {
  * not voted yet: the seat is decided, not the people holding it.
  */
 function saveCirculationDelegates(id, revision, candidates) {
-  const {book, email} = requireMeetingAdmin_();
+  const {book, email} = requireMeetingSuperAdmin_();
   id = circulationId_(id);
   return circulationLocked_(() => {
     const table = circulationSheet_(book, true);
@@ -155,12 +164,16 @@ function saveCirculationDelegates(id, revision, candidates) {
       .map(row => [circulationUnitKey_(row.unit), row]));
     const before = new Map(readCirculationDelegates_(paper).map(unit => [unit.key, unit]));
 
+    // A super administrator may add a representative to a unit that has already
+    // voted, but the representative who recorded that vote must stay seated.
     voted.forEach((row, key) => {
       const kept = before.get(key);
       if (!kept) return;
       const next = delegates.find(unit => unit.key === key);
-      const same = next ? [...next.emails].sort().join('|') === [...kept.emails].sort().join('|') : false;
-      if (!same) throw new Error('Wakil bagi ' + kept.name + ' tidak boleh diubah kerana unit itu telah mengundi.');
+      const voter = meetingEmail_(row.createdBy);
+      if (!next || !next.emails.includes(voter)) {
+        throw new Error('Wakil yang telah mengundi bagi ' + kept.name + ' mesti kekal dalam senarai.');
+      }
     });
 
     const updated = {
@@ -337,14 +350,23 @@ function circulationVotesReportHtml_({paper, tally, votes, roster, generatedBy})
   const line = value => esc(value).replace(/\n/g, '<br>');
   const memberName = email => roster.find(member => member.email === email)?.name || email;
   const rows = tally.unitStates.map(unit => {
-    const vote = votes.find(row => circulationUnitKey_(row.unit) === unit.key);
+    const vote = votes.find(row => circulationUnitKey_(row.unit) === unit.key
+      && (!unit.decidedBy || String(row.createdBy || '').toLowerCase() === unit.decidedBy));
     const representatives = unit.emails.map(memberName).join(', ');
-    const decision = vote ? (vote.decision === 'SOKONG' ? 'Menyokong' : vote.decision === 'BANTAH' ? 'Membantah' : String(vote.decision || '')) : 'Belum mengundi';
+    const decision = unit.vote
+      ? (unit.vote === 'SOKONG' ? 'Menyokong' : unit.vote === 'BANTAH' ? 'Membantah' : String(unit.vote))
+      : 'Belum mengundi';
+    const deanTag = unit.byDean ? ' <span class="muted">(Dekan)</span>' : '';
+    const superseded = unit.superseded
+      ? '<br><span class="muted">Undian wakil ' + esc(unit.superseded.email) + ': '
+        + esc(unit.superseded.decision === 'SOKONG' ? 'Menyokong' : unit.superseded.decision === 'BANTAH' ? 'Membantah' : unit.superseded.decision)
+        + ' — diketepikan</span>'
+      : '';
     return '<tr>'
       + '<td>' + esc(unit.name) + '</td>'
       + '<td>' + esc(representatives) + '</td>'
-      + '<td class="tag">' + esc(decision) + '</td>'
-      + '<td>' + (vote && vote.reason ? line(vote.reason) : '-') + '</td>'
+      + '<td class="tag">' + esc(decision) + deanTag + '</td>'
+      + '<td>' + (vote && vote.reason ? line(vote.reason) : '-') + superseded + '</td>'
       + '<td>' + (vote ? circulationFormatDate_(vote.createdAt) : '-') + '</td>'
       + '<td>' + (vote ? esc(vote.name || '') + (vote.createdBy ? '<br><span class="muted">' + esc(vote.createdBy) + '</span>' : '') : '-')
         + (vote && vote.updatedBy && vote.updatedBy !== vote.createdBy
@@ -434,9 +456,19 @@ function renderCirculationPage_(id) {
 function getCirculationPage(id) {
   const {paper, records, roster, email} = circulationAccess_(id);
   const pdf = paper.pdf && paper.status !== 'Draf' ? verifyCirculationPdf_(paper.pdf) : null;
-  const tally = circulationTally_(paper, records);
-  const options = tally.unitStates.filter(unit => unit.emails.includes(email)
-    && hasCirculationSeat_(roster, unit.key, email));
+  const tally = circulationTally_(paper, records, roster);
+  // A representative may vote while nobody has; a Dean may still vote after a
+  // representative because their decision outranks it.
+  const options = tally.unitStates
+    .filter(unit => unit.emails.includes(email) && hasCirculationSeat_(roster, unit.key, email))
+    .filter(unit => !unit.vote || (!unit.byDean && circulationIsDean_(roster, unit.key, email)))
+    .map(unit => ({
+      key: unit.key,
+      name: unit.name,
+      vote: unit.vote,
+      dean: circulationIsDean_(roster, unit.key, email),
+      overrides: unit.vote ? 'Undian wakil telah direkodkan; keputusan Dekan akan mengatasi.' : '',
+    }));
   return {
     viewer: {email, name: roster.find(member => member.email === email)?.name || ''},
     current: {
@@ -446,7 +478,7 @@ function getCirculationPage(id) {
       deadline: paper.deadline instanceof Date ? Utilities.formatDate(paper.deadline, MEETING_ZONE, 'dd/MM/yyyy · HH:mm') + ' MYT' : '',
       pdfUrl: pdf?.view || '', previewUrl: pdf?.preview || '', pdfKind: pdf?.kind || '',
       summary: tally.summary, unitStates: tally.unitStates.map(safeCirculationUnit_),
-      options: options.map(safeCirculationUnit_),
+      options,
     },
   };
 }
@@ -474,14 +506,22 @@ function submitCirculationVote(form) {
       throw new Error('Akaun ini tiada mandat mengundi bagi unit yang dipilih.');
     }
 
-    const previous = records.find(row => row.kind === 'UNDI' && row.id === id && circulationUnitKey_(row.unit) === key);
-    if (previous) {
-      if (previous.request === request && previous.createdBy === email && previous.decision === decision) {
-        return {id: previous.voteId, receipt: previous.receipt};
-      }
-      throw new Error('Undian bagi unit ini telah direkodkan.');
-    }
+    const previous = records.filter(row => row.kind === 'UNDI' && row.id === id && circulationUnitKey_(row.unit) === key);
+    const retry = previous.find(row => row.request === request && row.createdBy === email && row.decision === decision);
+    if (retry) return {id: retry.voteId, receipt: retry.receipt};
     if (!circulationIsOpen_(paper)) throw new Error('Undian bagi kertas ini telah ditutup atau masih dalam penyediaan.');
+
+    const actingDean = circulationIsDean_(roster, key, email);
+    const deanVote = previous.find(row => circulationIsDean_(roster, key, meetingEmail_(row.createdBy)));
+    if (deanVote) {
+      throw new Error(actingDean
+        ? 'Undian Dekan bagi unit ini telah direkodkan.'
+        : 'Keputusan Dekan telah direkodkan untuk unit ini.');
+    }
+    // Representatives share one vote per unit; a later Dean vote is the exception
+    // because the Dean's decision outranks theirs.
+    if (!actingDean && previous.length) throw new Error('Undian bagi unit ini telah direkodkan.');
+
     verifyCirculationPdf_(paper.pdf);
 
     const sheet = circulationSheet_(book);
@@ -579,14 +619,51 @@ function readCirculationDelegates_(paper) {
   return JSON.parse(paper.delegates || '[]');
 }
 
-function circulationTally_(paper, records) {
-  const decisions = new Map(records.filter(row => row.kind === 'UNDI' && row.id === paper.id)
-    .map(row => [circulationUnitKey_(row.unit), row.decision]));
-  const unitStates = readCirculationDelegates_(paper)
-    .map(unit => ({...unit, vote: decisions.get(unit.key) || ''}));
+function circulationTally_(paper, records, roster) {
+  const votes = records.filter(row => row.kind === 'UNDI' && row.id === paper.id);
+  const unitStates = readCirculationDelegates_(paper).map(unit => {
+    const unitVotes = votes.filter(row => circulationUnitKey_(row.unit) === unit.key);
+    const deanEmail = circulationDeanEmail_(roster || [], unit.key);
+    const isDeanVote = row => Boolean(deanEmail) && meetingEmail_(row.createdBy) === deanEmail;
+    const deanVote = lastCirculationVote_(unitVotes.filter(isDeanVote));
+    const repVote = lastCirculationVote_(unitVotes.filter(row => !isDeanVote(row)));
+    // The Dean outranks the representatives: when the Dean votes, that decision is
+    // the unit's decision even if a representative voted earlier or later.
+    const deciding = deanVote || repVote;
+    return {
+      ...unit,
+      vote: deciding ? deciding.decision : '',
+      decidedBy: deciding ? meetingEmail_(deciding.createdBy) : '',
+      byDean: Boolean(deanVote),
+      // The representative vote the Dean overruled, kept for the evidence trail.
+      superseded: deanVote && repVote
+        ? {decision: repVote.decision, email: meetingEmail_(repVote.createdBy), name: repVote.name, reason: repVote.reason}
+        : null,
+    };
+  });
   const support = unitStates.filter(unit => unit.vote === 'SOKONG').length;
   const oppose = unitStates.filter(unit => unit.vote === 'BANTAH').length;
   return {unitStates, summary: {support, oppose, waiting: unitStates.length - support - oppose, total: unitStates.length}};
+}
+
+function lastCirculationVote_(votes) {
+  return votes.length ? votes.reduce((latest, vote) => (Number(vote._row) || 0) >= (Number(latest._row) || 0) ? vote : latest) : null;
+}
+
+// "Dekan" decides the faculty vote; "Timbalan Dekan" is an ordinary representative.
+function isCirculationDeanRole_(role) {
+  const text = String(role || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return /^dekan\b/.test(text) && !/^timbalan/.test(text);
+}
+
+function circulationDeanEmail_(roster, key) {
+  const dean = roster.find(member => circulationUnitKey_(member.unit) === key && isCirculationDeanRole_(member.role));
+  return dean ? meetingEmail_(dean.email) : '';
+}
+
+function circulationIsDean_(roster, key, email) {
+  const target = meetingEmail_(email);
+  return Boolean(target) && circulationDeanEmail_(roster, key) === target;
 }
 
 function safeCirculationUnit_({key, name, vote}) {

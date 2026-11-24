@@ -284,11 +284,16 @@ function paint() {
   $('deadline').textContent = current.deadline;
   $('pdfBtn').disabled = !current.pdfUrl;
   $('pdfBtn').textContent = current.previewUrl ? 'Lihat kertas (PDF)' : 'Buka dokumen & cadangan ↗';
-  const available = current.options.some(unit => !unit.vote);
+  // A dean may still vote after a representative, because the dean's decision
+  // outranks the representative's.
+  const available = current.options.some(unit => !unit.vote || unit.dean);
   $('voteBtn').disabled = !current.isOpen || !available;
-  const voteNote = current.isOpen && !available
-    ? current.options.length ? 'Undian untuk unit yang anda wakili telah direkodkan.' : 'Akaun ini tiada peranan mengundi dalam edaran ini.'
-    : '';
+  const override = current.options.find(unit => unit.vote && unit.dean);
+  const voteNote = override
+    ? 'Undian wakil telah direkodkan untuk unit anda. Sebagai Dekan, undian anda akan mengatasi keputusan wakil.'
+    : current.isOpen && !available
+      ? (current.options.length ? 'Undian untuk unit yang anda wakili telah direkodkan.' : 'Akaun ini tiada peranan mengundi dalam edaran ini.')
+      : '';
   $('voteNote').textContent = voteNote;
   $('voteNote').hidden = !voteNote;
   renderUnits();
@@ -318,7 +323,7 @@ function requestId() {
 function showBallot() {
   const {current, viewer} = state.dashboard;
   $('voteForm').reset();
-  $('voteUnit').replaceChildren(...current.options.filter(unit => !unit.vote).map(unit => new Option(unit.name, unit.key)));
+  $('voteUnit').replaceChildren(...current.options.filter(unit => !unit.vote || unit.dean).map(unit => new Option(unit.vote ? unit.name + ' — undian Dekan mengatasi' : unit.name, unit.key)));
   $('voteName').value = viewer.name;
   $('voteEmail').value = viewer.email;
   $('ballotPaper').textContent = current.reference + ' · ' + current.title;

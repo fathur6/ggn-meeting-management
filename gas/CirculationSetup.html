@@ -383,8 +383,8 @@
     }
     byId('votes-save').hidden = !payload.canEditDelegates;
     byId('votes-status').textContent = payload.canEditDelegates
-      ? 'Tanda wakil bagi unit yang belum mengundi, kemudian simpan. Unit yang telah mengundi dikunci.'
-      : 'Undian telah ditutup; senarai wakil dan keputusan dikunci.';
+      ? 'Pentadbir utama PPS boleh tambah wakil pada kertas aktif. Wakil yang telah mengundi tidak boleh dibuang; keputusan Dekan mengatasi undi wakil.'
+      : 'Hanya pentadbir utama PPS boleh mengubah wakil. Undian yang telah ditutup dikunci sepenuhnya.';
   }
 
   function unitNode(unit) {
@@ -392,6 +392,7 @@
     const decision = unit.vote === 'SOKONG' ? 'Menyokong' : unit.vote === 'BANTAH' ? 'Membantah' : 'belum mengundi';
     const heading = element('h3', unit.name);
     heading.append(element('span', decision, 'edaran-status'));
+    if (unit.byDean) heading.append(element('span', 'Dekan', 'edaran-status'));
     box.append(heading);
 
     if (unit.votedBy) {
@@ -401,20 +402,27 @@
       }
       box.append(element('p', line, 'note'));
     }
+    if (unit.superseded) {
+      const label = unit.superseded.decision === 'SOKONG' ? 'Menyokong' : 'Membantah';
+      box.append(element('p', 'Undian wakil ' + unit.superseded.email + ': ' + label + ' — diketepikan kerana Dekan mengundi.', 'note'));
+    }
     if (unit.reason) {
       box.append(element('p', (unit.vote === 'BANTAH' ? 'Sebab/ulasan bantahan: ' : 'Cadangan pindaan: ') + unit.reason, 'note'));
     }
 
-    const locked = Boolean(unit.vote) || !votes.canEditDelegates;
+    // A super administrator may add representatives to an open paper, even after
+    // the unit voted, but cannot unseat the representative who recorded the vote.
+    const locked = !votes.canEditDelegates;
     unit.candidates.forEach(candidate => {
       const label = document.createElement('label');
       const checkbox = document.createElement('input');
       checkbox.type = 'checkbox';
       checkbox.checked = candidate.selected;
-      checkbox.disabled = locked;
+      checkbox.disabled = locked || Boolean(candidate.voter && candidate.selected);
       checkbox.dataset.unit = unit.key;
       checkbox.dataset.email = candidate.email;
-      label.append(checkbox, element('span', candidate.name + (candidate.role ? ' · ' + candidate.role : '')));
+      const suffix = (candidate.role ? ' · ' + candidate.role : '') + (candidate.voter ? ' · mengundi' : '');
+      label.append(checkbox, element('span', candidate.name + suffix));
       box.append(label);
     });
     if (!unit.candidates.length) {

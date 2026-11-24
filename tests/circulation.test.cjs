@@ -324,15 +324,74 @@ test('the TDA PPS may correct a faculty vote while the poll is open', () => {
   assert.equal(corrected.summary.oppose, 1);
   assert.equal(data['Log Pengesahan Edaran'].length, 2);
 
-  // A unit that has voted keeps the representatives it voted with.
+  // A super administrator may add representatives after the unit voted, but the
+  // representative who recorded the vote must stay seated.
   assert.throws(() => methods.saveCirculationDelegates(paperId, paper.revision, [
     {unit: faculty, email: alternate}, {unit: secondFaculty, email: otherFaculty},
-  ]), /tidak boleh diubah/);
+  ]), /mesti kekal/);
+  state.user = admin;
+  assert.throws(() => methods.saveCirculationDelegates(paperId, paper.revision, [
+    {unit: faculty, email: japsuMember}, {unit: secondFaculty, email: otherFaculty},
+  ]), /pentadbir utama PPS/);
+
+  state.user = tda;
+  const added = methods.saveCirculationDelegates(paperId, paper.revision, [
+    {unit: faculty, email: japsuMember}, {unit: faculty, email: alternate},
+    {unit: secondFaculty, email: otherFaculty},
+  ]);
+  assert.equal(added.revision, paper.revision + 1);
 
   state.user = admin;
-  assert.equal(methods.changeCirculationStatus(paperId, paper.revision, 'Tutup').status, 'Ditutup');
+  assert.equal(methods.changeCirculationStatus(paperId, added.revision, 'Tutup').status, 'Ditutup');
   const closed = methods.getCirculationVotes(paperId).paper.revision;
   state.user = tda;
   assert.throws(() => methods.overrideCirculationVote(paperId, faculty, 'SOKONG', 'selepas tutup'), /semasa undian dibuka/);
   assert.equal(methods.getCirculationVotes(paperId).paper.revision, closed);
+});
+
+test('the Dean decision outranks a representative vote', () => {
+  const {methods, data, state, draft, publish, vote} = testEnvironment();
+  data['Ahli JAPSU'].push([5, 'Wakil Penyelaras', 'Penyelaras Siswazah', faculty, 'penyelaras@unisza.edu.my', '', '', 'Aktif']);
+  draft({candidates: [
+    {email: japsuMember, unit: faculty}, {email: alternate, unit: faculty},
+    {email: 'penyelaras@unisza.edu.my', unit: faculty}, {email: otherFaculty, unit: secondFaculty},
+  ]});
+  publish();
+
+  // A representative votes first; the Dean may still vote and their decision wins.
+  state.user = 'penyelaras@unisza.edu.my';
+  vote({vote: 'SOKONG'});
+  state.user = japsuMember;
+  const deanOptions = methods.getCirculationPage(paperId).current.options;
+  assert.equal(deanOptions.length, 1);
+  assert.equal(deanOptions[0].dean, true);
+  assert.equal(deanOptions[0].vote, 'SOKONG');
+  vote({vote: 'BANTAH', reason: 'Keputusan fakulti membantah.'});
+
+  state.user = admin;
+  let unit = methods.getCirculationVotes(paperId).units.find(entry => entry.key === faculty.toLowerCase());
+  assert.equal(unit.vote, 'BANTAH');
+  assert.equal(unit.byDean, true);
+  assert.equal(unit.votedBy, japsuMember);
+  assert.equal(unit.superseded.decision, 'SOKONG');
+
+  // Once the Dean has voted, a representative can no longer change the unit.
+  state.user = 'penyelaras@unisza.edu.my';
+  assert.throws(() => vote({vote: 'SOKONG'}), /Keputusan Dekan/);
+  state.user = japsuMember;
+  assert.throws(() => vote({vote: 'SOKONG'}), /Undian Dekan/);
+});
+
+test('a Dean cannot be overruled by a later representative vote', () => {
+  const {methods, state, draft, publish, vote} = testEnvironment();
+  draft();
+  publish();
+  state.user = japsuMember;
+  vote({vote: 'SOKONG'});
+  state.user = alternate;
+  assert.throws(() => vote({vote: 'BANTAH', reason: 'Bantahan wakil.'}), /Keputusan Dekan/);
+  state.user = admin;
+  const {summary} = methods.getCirculationVotes(paperId);
+  assert.equal(summary.support, 1);
+  assert.equal(summary.oppose, 0);
 });
