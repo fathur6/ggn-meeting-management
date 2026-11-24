@@ -906,3 +906,86 @@ function circulationLocked_(action) {
     lock.releaseLock();
   }
 }
+
+/**
+ * One-off spelling repair. The rosters and the circulation records drifted apart
+ * ("Rekabentuk", "Pengurusan dan Perniagaan", "& " vs "dan", "Melayu Islan", a
+ * shouted centre name). Renames every unit in the roster tabs and in
+ * Pengesahan Edaran (paper delegates and each UNDI row), so votes keep matching
+ * their unit after the rename.
+ *
+ * Run from the portal with an empty call for a report, then with `true` to apply.
+ */
+const CIRCULATION_UNIT_CORRECTIONS = [
+  [/^fakulti rekabentuk inovatif dan teknologi$/i, 'Fakulti Reka Bentuk Inovatif dan Teknologi'],
+  [/^fakulti pengurusan dan perniagaan$/i, 'Fakulti Perniagaan dan Pengurusan'],
+  [/^institut penyelidikan produk\s*(?:&|dan)\s*ketamadunan melayu islan$/i, 'Institut Penyelidikan Produk dan Ketamadunan Melayu Islam'],
+  [/^institut penyelidikan produk\s*(?:&|dan)\s*ketamadunan melayu islam$/i, 'Institut Penyelidikan Produk dan Ketamadunan Melayu Islam'],
+  [/^pusat pemindahan ilmu dan pendidikan berterusan$/i, 'Pusat Pemindahan Ilmu dan Pendidikan Berterusan'],
+];
+
+function correctedCirculationUnit_(name) {
+  const text = String(name || '').replace(/\s+/g, ' ').trim();
+  for (const [pattern, fixed] of CIRCULATION_UNIT_CORRECTIONS) {
+    if (pattern.test(text)) return fixed;
+  }
+  return text;
+}
+
+function repairCirculationUnitSpellings(apply) {
+  const {book, email} = requireMeetingSuperAdmin_();
+  const dryRun = apply !== true;
+  return circulationLocked_(() => {
+    const changes = [];
+
+    // 1) roster tabs
+    ['Ahli JKPS', 'Ahli JAPSU'].forEach(tab => {
+      const sheet = book.getSheetByName(tab);
+      if (!sheet) return;
+      const values = sheet.getDataRange().getValues();
+      const header = values[0] || [];
+      const column = header.indexOf('Fakulti / Pusat / Institut');
+      if (column < 0) return;
+      values.slice(1).forEach((row, index) => {
+        const current = String(row[column] || '');
+        const fixed = correctedCirculationUnit_(current);
+        if (!current || fixed === current.trim()) return;
+        changes.push({where: tab, row: index + 2, from: current, to: fixed});
+        if (!dryRun) sheet.getRange(index + 2, column + 1).setValue(fixed);
+      });
+    });
+
+    // 2) circulation records
+    const table = circulationSheet_(book);
+    if (table) {
+      circulationRecords_(book).forEach(record => {
+        if (record.kind === 'KERTAS') {
+          const units = readCirculationDelegates_(record);
+          let touched = false;
+          const fixed = units.map(unit => {
+            const name = correctedCirculationUnit_(unit.name);
+            if (name === unit.name) return unit;
+            touched = true;
+            changes.push({where: 'Pengesahan Edaran', row: record._row, from: unit.name, to: name, field: 'delegates'});
+            return {...unit, name, key: circulationUnitKey_(name)};
+          });
+          if (touched && !dryRun) {
+            const current = findCirculationPaper_(circulationRecords_(book), record.id);
+            writeCirculationRecord_(table, current._row, {...current, delegates: JSON.stringify(fixed), updatedAt: new Date(), updatedBy: email});
+          }
+          return;
+        }
+        if (record.kind === 'UNDI') {
+          const name = correctedCirculationUnit_(record.unit);
+          if (name === record.unit) return;
+          changes.push({where: 'Pengesahan Edaran', row: record._row, from: record.unit, to: name, field: 'undi'});
+          if (!dryRun) writeCirculationRecord_(table, record._row, {...record, unit: name});
+        }
+      });
+    }
+
+    if (!dryRun) SpreadsheetApp.flush();
+    console.log('repairCirculationUnitSpellings: %s change(s)%s', changes.length, dryRun ? ' (dry run)' : ' applied');
+    return {applied: !dryRun, changes, count: changes.length};
+  });
+}

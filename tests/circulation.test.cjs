@@ -503,3 +503,36 @@ test('a one-character typo in a stored unit still exposes its roster members', (
     paperId, requestId: randomUUID(), unit: stored, vote: 'SOKONG', name: 'Timb Pengarah', email: timbalan, receipt: false,
   }).id);
 });
+
+test('the spelling repair renames rosters and records without losing votes', () => {
+  const {methods, data, state, draft, publish, vote} = testEnvironment();
+  const typo = 'Institut Penyelidikan Produk & Ketamadunan Melayu Islan';
+  const fixed = 'Institut Penyelidikan Produk dan Ketamadunan Melayu Islam';
+  data['Ahli JAPSU'].push([6, 'Pengarah INSPIRE', 'Pengarah', typo, 'inspire@unisza.edu.my', '', '', 'Aktif']);
+  data['Ahli JKPS'].push([2, 'Timb Dekan FRIT', 'Timbalan Dekan', 'Fakulti Rekabentuk Inovatif dan Teknologi', 'frit@unisza.edu.my', '', '', 'Aktif']);
+
+  draft({candidates: [
+    {unit: typo, email: 'inspire@unisza.edu.my'}, {unit: faculty, email: japsuMember}, {unit: secondFaculty, email: otherFaculty},
+  ]});
+  publish();
+  state.user = 'inspire@unisza.edu.my';
+  vote({unit: typo, vote: 'SOKONG'});
+
+  state.user = 'fathurrahman@unisza.edu.my';
+  data['Ahli PPS'].push([2, 'TDA PPS', 'TDA_PPS', 'Pusat Pengajian Siswazah', state.user]);
+  const report = methods.repairCirculationUnitSpellings(false);
+  assert.equal(report.applied, false);
+  assert.equal(report.changes.some(change => change.from === typo && change.to === fixed), true);
+  assert.equal(report.changes.some(change => /Rekabentuk/.test(change.from || '')), true);
+
+  const applied = methods.repairCirculationUnitSpellings(true);
+  assert.equal(applied.applied, true);
+  assert.equal(methods.repairCirculationUnitSpellings(true).count, 0, 'second pass is a no-op');
+
+  state.user = admin;
+  const unit = methods.getCirculationVotes(paperId).units.find(entry => entry.name === fixed);
+  assert.ok(unit, 'renamed unit is stored');
+  assert.equal(unit.vote, 'SOKONG', 'the exchange vote still matches the renamed unit');
+  assert.equal(data['Ahli JAPSU'].some(row => row[3] === typo), false);
+  assert.equal(data['Ahli JKPS'].some(row => row[3] === 'Fakulti Rekabentuk Inovatif dan Teknologi'), false);
+});
