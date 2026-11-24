@@ -26,7 +26,7 @@ function getPortalMembers(committee) {
   requireMeetingAdmin_();
   const sheetName = committee === 'JAPSU' ? 'Ahli JAPSU' : 'Ahli JKPS';
   const rows = readObjects_(getSpreadsheet_(), sheetName).filter(function(row) { return row.Nama && row.Emel; }).map(function(row) {
-    return { id: row.Bil, name: row.Nama, position: row.Jawatan, faculty: row['Fakulti / Pusat / Institut'], email: row.Emel, appointment: row['Tarikh Lantikan'] || '', end: row['Tarikh Tamat'] || '', status: row['Status Keahlian'] || 'Aktif' };
+    return { id: row.Bil, name: row.Nama, position: row.Jawatan, faculty: row['Fakulti / Pusat / Institut'], email: row.Emel, appointment: portalIsoDate_(row['Tarikh Lantikan']), end: portalIsoDate_(row['Tarikh Tamat']), status: row['Status Keahlian'] || 'Aktif' };
   });
   return { active: rows.filter(function(row) { return !isPastMember_(row.status); }), past: rows.filter(function(row) { return isPastMember_(row.status); }) };
 }
@@ -36,10 +36,31 @@ function savePortalMember(committee, member) {
   const sheet = getSpreadsheet_().getSheetByName(committee === 'JAPSU' ? 'Ahli JAPSU' : 'Ahli JKPS');
   const data = sheet.getDataRange().getValues();
   const rowIndex = data.slice(1).findIndex(function(row) { return String(row[0]) === String(member.id); });
-  const values = [member.name, member.position, member.faculty, member.email, member.appointment || '', member.end || '', member.status || 'Aktif'];
+  const existing = rowIndex >= 0 ? data[rowIndex + 1] : null;
+  // A blank date from the form means "leave it as it was". Dates the form cannot
+  // display used to be submitted blank and quietly wiped the appointment history.
+  const held = function(index) { return existing && existing[index] ? existing[index] : ''; };
+  const appointment = member.appointment ? portalIsoDate_(member.appointment) : held(5);
+  const end = member.end ? portalIsoDate_(member.end) : held(6);
+  const values = [member.name, member.position, member.faculty, member.email, appointment, end, member.status || 'Aktif'];
   if (rowIndex >= 0) sheet.getRange(rowIndex + 2, 2, 1, 7).setValues([values]);
   else sheet.appendRow([nextMemberId_(data), values[0], values[1], values[2], values[3], values[4], values[5], values[6]]);
   return getPortalMembers(committee);
+}
+
+// The sheet may hold a real date, an ISO string or dd/MM/yyyy text; the date input
+// needs yyyy-MM-dd. readObjects_ already turns Date cells into "yyyy-MM-dd HH:mm:ss".
+function portalIsoDate_(value) {
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return Utilities.formatDate(value, MEETING_ZONE, 'yyyy-MM-dd');
+  }
+  const text = String(value || '').trim();
+  if (!text) return '';
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T]|$)/);
+  if (iso) return iso[1] + '-' + iso[2] + '-' + iso[3];
+  const dmy = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+  if (dmy) return dmy[3] + '-' + String(dmy[2]).padStart(2, '0') + '-' + String(dmy[1]).padStart(2, '0');
+  return '';
 }
 
 function archivePortalMember(committee, id) {

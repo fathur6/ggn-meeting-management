@@ -13,10 +13,10 @@
         <label class="edaran-span">Tajuk kertas<input name="title" maxlength="300" required></label>
         <label class="edaran-span">Maklumat jawatankuasa<textarea name="context" rows="2" maxlength="2000" placeholder="Contohnya bilangan mesyuarat, nombor kertas atau perkara agenda"></textarea></label>
         <label class="edaran-span">Perkara untuk pertimbangan<textarea name="summary" rows="5" maxlength="8000" placeholder="Masukkan satu perkara pada setiap baris."></textarea></label>
-        <label>Pautan PDF di Google Drive<input name="pdf" type="url" placeholder="https://drive.google.com/file/d/…/view" aria-describedby="circulation-pdf-note"></label>
+        <label>Pautan dokumen (Google Drive / OneDrive)<input name="pdf" type="url" placeholder="https://drive.google.com/file/d/…/view atau https://….sharepoint.com/:w:/g/…" aria-describedby="circulation-pdf-note"></label>
         <label>Tarikh dan masa tutup (MYT)<input name="deadline" type="datetime-local"></label>
       </div>
-      <p class="note" id="circulation-pdf-note">Pastikan ahli jawatankuasa dan penyemak yang berkenaan boleh membuka pautan PDF.</p>
+      <p class="note" id="circulation-pdf-note">Google Drive memaparkan PDF dalam portal. Pautan OneDrive atau SharePoint membuka dokumen Word dalam tab baharu supaya ahli boleh menyemak dan menambah komen atau cadangan; pastikan pautan dikongsi kepada ahli jawatankuasa dan penyemak yang berkenaan.</p>
       <fieldset class="edaran-seats">
         <legend>Wakil fakulti, institut dan pusat terpilih</legend>
         <p class="note">Tandakan wakil yang boleh mengundi. Jika beberapa wakil dilantik untuk satu unit, sistem merekodkan satu undi untuk unit itu.</p>
@@ -29,6 +29,17 @@
         <button type="submit" id="circulation-save">Simpan draf</button>
       </div>
     </form>
+  </section>
+  <section class="panel edaran-votes" id="circulation-votes" hidden>
+    <h2 id="votes-heading">Wakil dan undian</h2>
+    <p class="note" id="circulation-votes-paper"></p>
+    <p class="note" id="circulation-votes-summary"></p>
+    <div id="circulation-votes-units"></div>
+    <div class="edaran-actions">
+      <button type="button" class="secondary" id="circulation-votes-close">Tutup</button>
+      <button type="button" id="circulation-votes-save">Simpan wakil</button>
+    </div>
+    <p class="note" id="circulation-votes-status" role="status" aria-live="polite"></p>
   </section>
   <section class="panel edaran-list">
     <h2>Senarai kertas edaran</h2>
@@ -58,7 +69,14 @@
 .edaran-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .edaran-status{display:inline-block;border-radius:20px;padding:4px 8px;background:#e8f1eb;color:#104534;font-weight:700;font-size:12px;white-space:nowrap}
 .edaran-list table{margin-top:12px;min-width:620px}
-.edaran-list td:last-child{min-width:190px}
+.edaran-list td:last-child{min-width:215px}
+.edaran-actions button{flex:0 0 auto;white-space:nowrap}
+.edaran-votes .note{margin:.2rem 0 .6rem}
+.edaran-votes .edaran-unit{border-top:1px solid #e5ede7}
+.edaran-votes .edaran-unit h3{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:15px}
+.edaran-override{display:grid;grid-template-columns:minmax(120px,160px) minmax(0,1fr) auto;gap:8px;align-items:center;margin:8px 0 4px}
+.edaran-override select,.edaran-override input{min-height:38px;border:1px solid #d9d9dd;border-radius:4px;padding:8px;font:14px Arial,sans-serif;letter-spacing:0;color:#212121;background:#fff}
+@media(max-width:720px){.edaran-override{grid-template-columns:1fr}}
 .edaran-link{display:inline-block;padding:7px 4px;color:#104534}
 #circulation .edaran-error{color:#982f26}
 #circulation button:disabled{opacity:.55;cursor:default}
@@ -99,7 +117,7 @@
 
   async function load() {
     try {
-      const {papers} = await rpc('getCirculationAdmin');
+      const {papers, canDelete} = await rpc('getCirculationAdmin');
       const table = byId('rows');
       const rows = papers.map(paper => {
         const tr = document.createElement('tr');
@@ -113,7 +131,7 @@
         const td = element('td', '');
         const controls = element('div', '', 'edaran-actions');
         if (paper.status === 'Draf') {
-          controls.append(action('Sunting', () => openEditor(paper)), action('Terbitkan', () => changeStatus(paper, 'Terbit'), false), action('Buang', () => deleteDraft(paper), true, true));
+          controls.append(action('Sunting', () => openEditor(paper)), action('Terbitkan', () => changeStatus(paper, 'Terbit'), false));
         } else {
           if (paper.link) {
             const link = element('a', 'Buka edaran ↗', 'edaran-link');
@@ -123,8 +141,14 @@
             controls.append(link, action('Salin pautan', () => copyLink(paper.link)));
           }
           controls.append(action('Muat turun PDF', () => downloadReport(paper)));
+          controls.append(action('Wakil & undian', () => openVotes(paper)));
           if (paper.status === 'Dibuka') controls.append(action('Tutup undian', () => changeStatus(paper, 'Tutup')));
         }
+        // Deleting is a TDA PPS action. Without that access the draft-only
+        // "Buang" stays available as before; the server rejects either call
+        // when the account is not allowed.
+        if (canDelete) controls.append(action('Padam', () => deletePaper(paper), false, true));
+        else if (paper.status === 'Draf') controls.append(action('Buang', () => deleteDraft(paper), false, true));
         td.append(controls);
         tr.append(title, status, tally, td);
         return tr;
@@ -258,6 +282,29 @@
     }
   }
 
+  async function deletePaper(paper) {
+    if (state.busy) return;
+    const {support, oppose, waiting} = paper.tally;
+    const votes = support + oppose + waiting;
+    const warning = paper.status === 'Draf'
+      ? 'Padam draf "' + paper.title + '"?'
+      : 'Padam kertas edaran "' + paper.title + '" (' + paper.statusLabel + ')?\n\n'
+        + votes + ' unit terlibat dalam edaran ini dan semua rekod undi akan turut dipadam.\n'
+        + 'Fail PDF di Google Drive tidak terjejas.\n\nTindakan ini tidak boleh dibatalkan.';
+    if (!window.confirm(warning)) return;
+    state.busy = true;
+    try {
+      const result = await rpc('deleteCirculationPaper', paper.id, paper.revision);
+      if (paper.id === state.paper?.id) byId('editor').hidden = true;
+      tell('Kertas edaran telah dipadam' + (result.votesRemoved ? ' bersama ' + result.votesRemoved + ' rekod undi.' : '.'));
+      await load();
+    } catch (error) {
+      tell(error.message || String(error), true);
+    } finally {
+      state.busy = false;
+    }
+  }
+
   async function downloadReport(paper) {
     if (state.busy) return;
     state.busy = true;
@@ -291,6 +338,160 @@
       window.prompt('Salin pautan untuk emel atau WhatsApp.', url);
     }
   }
+
+  // ---------------------------------------------- representatives and votes
+  const votes = {paper: null, units: [], canEditDelegates: false, canOverride: false, busy: false};
+
+  async function openVotes(paper) {
+    if (state.busy) return;
+    tell('Memuatkan wakil dan undian…');
+    try {
+      const payload = await rpc('getCirculationVotes', paper.id);
+      votes.paper = payload.paper;
+      votes.units = payload.units;
+      votes.canEditDelegates = payload.canEditDelegates;
+      votes.canOverride = payload.canOverride;
+      renderVotes(payload);
+      byId('votes').hidden = false;
+      tell('');
+      byId('votes').scrollIntoView({behavior: 'smooth', block: 'start'});
+    } catch (error) {
+      tell(error.message || String(error), true);
+    }
+  }
+
+  function currentSelection() {
+    const map = new Map();
+    byId('votes-units').querySelectorAll('input[type=checkbox]').forEach(checkbox => {
+      map.set(checkbox.dataset.unit + '|' + checkbox.dataset.email, checkbox.checked);
+    });
+    return map;
+  }
+
+  function renderVotes(payload, keep) {
+    const {support, oppose, waiting} = payload.summary;
+    byId('votes-paper').textContent = payload.paper.committee + ' · ' + (payload.paper.reference || payload.paper.title) + ' · ' + payload.paper.statusLabel;
+    byId('votes-summary').textContent = support + ' menyokong · ' + oppose + ' bantahan · ' + waiting + ' belum mengundi';
+    byId('votes-units').replaceChildren(...payload.units.map(unitNode));
+    if (keep) {
+      // An override re-renders the panel; do not discard representatives the
+      // administrator ticked but has not saved yet.
+      byId('votes-units').querySelectorAll('input[type=checkbox]').forEach(checkbox => {
+        const saved = keep.get(checkbox.dataset.unit + '|' + checkbox.dataset.email);
+        if (typeof saved === 'boolean' && !checkbox.disabled) checkbox.checked = saved;
+      });
+    }
+    byId('votes-save').hidden = !payload.canEditDelegates;
+    byId('votes-status').textContent = payload.canEditDelegates
+      ? 'Tanda wakil bagi unit yang belum mengundi, kemudian simpan. Unit yang telah mengundi dikunci.'
+      : 'Undian telah ditutup; senarai wakil dan keputusan dikunci.';
+  }
+
+  function unitNode(unit) {
+    const box = element('section', '', 'edaran-unit');
+    const decision = unit.vote === 'SOKONG' ? 'Menyokong' : unit.vote === 'BANTAH' ? 'Membantah' : 'belum mengundi';
+    const heading = element('h3', unit.name);
+    heading.append(element('span', decision, 'edaran-status'));
+    box.append(heading);
+
+    if (unit.votedBy) {
+      let line = 'Direkod oleh ' + unit.votedBy + (unit.votedAt ? ' pada ' + unit.votedAt : '');
+      if (unit.changedBy && unit.changedBy !== unit.votedBy) {
+        line += ' · diubah oleh ' + unit.changedBy + (unit.changedAt ? ' pada ' + unit.changedAt : '');
+      }
+      box.append(element('p', line, 'note'));
+    }
+    if (unit.reason) {
+      box.append(element('p', (unit.vote === 'BANTAH' ? 'Sebab/ulasan bantahan: ' : 'Cadangan pindaan: ') + unit.reason, 'note'));
+    }
+
+    const locked = Boolean(unit.vote) || !votes.canEditDelegates;
+    unit.candidates.forEach(candidate => {
+      const label = document.createElement('label');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.checked = candidate.selected;
+      checkbox.disabled = locked;
+      checkbox.dataset.unit = unit.key;
+      checkbox.dataset.email = candidate.email;
+      label.append(checkbox, element('span', candidate.name + (candidate.role ? ' · ' + candidate.role : '')));
+      box.append(label);
+    });
+    if (!unit.candidates.length) {
+      box.append(element('p', 'Tiada wakil aktif dalam daftar untuk unit ini.', 'note'));
+    }
+
+    if (unit.vote && votes.canOverride) {
+      const form = element('div', '', 'edaran-override');
+      const select = document.createElement('select');
+      select.append(new Option('Sokong', 'SOKONG'), new Option('Bantah', 'BANTAH'));
+      // Default to the opposite decision: the point of the control is to correct it.
+      select.value = unit.vote === 'SOKONG' ? 'BANTAH' : 'SOKONG';
+      const reason = document.createElement('input');
+      reason.type = 'text';
+      reason.maxLength = 300;
+      reason.placeholder = 'Sebab perubahan (wajib untuk log)';
+      const apply = element('button', 'Ubah keputusan');
+      apply.type = 'button';
+      apply.addEventListener('click', () => overrideVote(unit, select.value, reason.value));
+      form.append(select, reason, apply);
+      box.append(form);
+    }
+    return box;
+  }
+
+  async function overrideVote(unit, decision, reason) {
+    if (votes.busy) return;
+    if (!String(reason || '').trim()) {
+      tell('Masukkan sebab perubahan supaya ia direkod dalam log.', true);
+      return;
+    }
+    const label = decision === 'SOKONG' ? 'Sokong' : 'Bantah';
+    if (!window.confirm('Ubah keputusan ' + unit.name + ' kepada ' + label + '?')) return;
+    votes.busy = true;
+    try {
+      const keep = currentSelection();
+      const payload = await rpc('overrideCirculationVote', votes.paper.id, unit.key, decision, reason);
+      renderVotes(payload, keep);
+      tell('Keputusan ' + unit.name + ' dikemas kini kepada ' + label + '. Perubahan direkod dalam log.');
+      await load();
+    } catch (error) {
+      tell(error.message || String(error), true);
+    } finally {
+      votes.busy = false;
+    }
+  }
+
+  async function saveDelegates() {
+    if (votes.busy || !votes.canEditDelegates) return;
+    const unitName = new Map(votes.units.map(unit => [unit.key, unit.name]));
+    const candidates = [...byId('votes-units').querySelectorAll('input[type=checkbox]')]
+      .filter(checkbox => checkbox.checked)
+      .map(checkbox => ({unit: unitName.get(checkbox.dataset.unit), email: checkbox.dataset.email}));
+    if (!candidates.length) {
+      tell('Tandakan sekurang-kurangnya seorang wakil.', true);
+      return;
+    }
+    votes.busy = true;
+    byId('votes-save').disabled = true;
+    try {
+      await rpc('saveCirculationDelegates', votes.paper.id, votes.paper.revision, candidates);
+      const payload = await rpc('getCirculationVotes', votes.paper.id);
+      votes.paper = payload.paper;
+      votes.units = payload.units;
+      renderVotes(payload);
+      tell('Senarai wakil dikemas kini.');
+      await load();
+    } catch (error) {
+      tell(error.message || String(error), true);
+    } finally {
+      votes.busy = false;
+      byId('votes-save').disabled = false;
+    }
+  }
+
+  byId('votes-close').addEventListener('click', () => { if (!votes.busy) byId('votes').hidden = true; });
+  byId('votes-save').addEventListener('click', saveDelegates);
 
   byId('new').addEventListener('click', () => { if (!state.busy) openEditor(); });
   byId('cancel').addEventListener('click', () => { if (!state.busy) byId('editor').hidden = true; });

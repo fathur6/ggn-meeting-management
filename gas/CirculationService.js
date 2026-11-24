@@ -11,9 +11,11 @@ const CIRCULATION_COLUMNS = {
 };
 
 function getCirculationAdmin() {
-  const {book} = requireMeetingAdmin_();
+  const {book, email} = requireMeetingAdmin_();
   const entries = circulationRecords_(book);
   return {
+    // Only the TDA PPS sees the delete control; the server re-checks on delete.
+    canDelete: isMeetingTdaPps_(email),
     papers: entries.filter(row => row.kind === 'KERTAS').reverse().map(paper => ({
       ...adminPaper_(paper),
       tally: circulationTally_(paper, entries).summary,
@@ -26,6 +28,180 @@ function getCirculationCandidates(committee) {
   const candidates = circulationRoster_(book, committee).filter(member => isCirculationUnit_(member.unit));
   const unique = new Map(candidates.map(member => [circulationUnitKey_(member.unit) + '|' + member.email, member]));
   return [...unique.values()].sort((a, b) => a.unit.localeCompare(b.unit) || a.name.localeCompare(b.name));
+}
+
+/**
+ * One unit casts one vote, but several representatives may hold the seat and any of
+ * them may cast it. This payload powers the "Wakil dan undian" panel: who holds the
+ * seat, what the unit decided, and which representatives may still be changed.
+ */
+function getCirculationVotes(id) {
+  const {book, email} = requireMeetingAdmin_();
+  id = circulationId_(id);
+  const records = circulationRecords_(book);
+  const paper = findCirculationPaper_(records, id);
+  return circulationVotesPayload_(book, paper, records, email);
+}
+
+function circulationVotesPayload_(book, paper, records, actor) {
+  const roster = circulationRoster_(book, paper.committee).filter(member => isCirculationUnit_(member.unit));
+  const candidatesByUnit = new Map();
+  roster.forEach(member => {
+    const key = circulationUnitKey_(member.unit);
+    if (!candidatesByUnit.has(key)) candidatesByUnit.set(key, []);
+    candidatesByUnit.get(key).push(member);
+  });
+  const votes = new Map(records
+    .filter(row => row.kind === 'UNDI' && row.id === paper.id)
+    .map(row => [circulationUnitKey_(row.unit), row]));
+  const isOpen = paper.status === 'Dibuka';
+  const tda = isMeetingTdaPps_(actor);
+
+  const units = readCirculationDelegates_(paper).map(unit => {
+    const vote = votes.get(unit.key) || null;
+    const candidates = (candidatesByUnit.get(unit.key) || [])
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(member => ({
+        email: member.email, name: member.name, role: member.role,
+        selected: unit.emails.includes(member.email),
+      }));
+    return {
+      key: unit.key,
+      name: unit.name,
+      emails: unit.emails,
+      candidates,
+      vote: vote ? vote.decision : '',
+      reason: vote ? vote.reason : '',
+      votedBy: vote ? vote.createdBy : '',
+      votedAt: circulationStamp_(vote && vote.createdAt),
+      changedBy: vote ? vote.updatedBy : '',
+      changedAt: circulationStamp_(vote && vote.updatedAt),
+    };
+  });
+
+  return {
+    paper: {
+      id: paper.id, title: paper.title, reference: paper.reference, committee: paper.committee,
+      status: paper.status, statusLabel: circulationStatus_(paper),
+      revision: Number(paper.revision), isOpen,
+    },
+    summary: circulationTally_(paper, records).summary,
+    units,
+    // Changing a representative is allowed while the poll is open; a unit that has
+    // already voted keeps the representatives it voted with.
+    canEditDelegates: isOpen,
+    canOverride: tda && isOpen,
+  };
+}
+
+function circulationStamp_(value) {
+  return value instanceof Date && Number.isFinite(value.getTime())
+    ? Utilities.formatDate(value, MEETING_ZONE, 'dd/MM/yyyy HH:mm')
+    : '';
+}
+
+/**
+ * The TDA PPS may correct a faculty's recorded vote while the poll is open, for
+ * example when the representative's decision contradicts the faculty. The previous
+ * decision is kept in the audit log.
+ */
+function overrideCirculationVote(id, unitKey, decision, reason) {
+  const {book, email} = requireMeetingTdaPps_();
+  id = circulationId_(id);
+  const vote = String(decision || '').trim().toUpperCase();
+  if (!['SOKONG', 'BANTAH'].includes(vote)) throw new Error('Pilih Sokong atau Bantah.');
+  const note = circulationText_(reason, 2000, 'Sebab perubahan', true);
+  const key = circulationUnitKey_(unitKey);
+
+  return circulationLocked_(() => {
+    const table = circulationSheet_(book, true);
+    const records = circulationRecords_(book);
+    const paper = findCirculationPaper_(records, id);
+    if (paper.status !== 'Dibuka') throw new Error('Keputusan hanya boleh diubah semasa undian dibuka.');
+    const unit = readCirculationDelegates_(paper).find(entry => entry.key === key);
+    if (!unit) throw new Error('Unit edaran tidak ditemui.');
+    const current = records.find(row => row.kind === 'UNDI' && row.id === id && circulationUnitKey_(row.unit) === key);
+    if (!current) throw new Error('Unit ini belum mengundi.');
+    if (current.decision === vote) throw new Error('Keputusan ' + unit.name + ' sudah ' + vote + '.');
+
+    writeCirculationRecord_(table, current._row, {
+      ...current, decision: vote, reason: note, updatedAt: new Date(), updatedBy: email,
+    });
+    circulationLog_(book, {
+      id, committee: paper.committee, reference: paper.reference, unit: unit.name,
+      action: 'Ubah keputusan', before: current.decision, after: vote, reason: note, by: email,
+    });
+    return circulationVotesPayload_(book, findCirculationPaper_(circulationRecords_(book), id), circulationRecords_(book), email);
+  });
+}
+
+/**
+ * Adds or removes representatives while the poll is open, as long as that unit has
+ * not voted yet: the seat is decided, not the people holding it.
+ */
+function saveCirculationDelegates(id, revision, candidates) {
+  const {book, email} = requireMeetingAdmin_();
+  id = circulationId_(id);
+  return circulationLocked_(() => {
+    const table = circulationSheet_(book, true);
+    const records = circulationRecords_(book);
+    const paper = findCirculationPaper_(records, id);
+    circulationRevision_(paper, revision);
+    if (paper.status !== 'Dibuka') throw new Error('Wakil boleh diubah semasa undian dibuka. Draf disunting melalui borang kertas.');
+    const roster = circulationRoster_(book, paper.committee);
+    const delegates = circulationDelegates_(roster, candidates);
+    const voted = new Map(records
+      .filter(row => row.kind === 'UNDI' && row.id === id)
+      .map(row => [circulationUnitKey_(row.unit), row]));
+    const before = new Map(readCirculationDelegates_(paper).map(unit => [unit.key, unit]));
+
+    voted.forEach((row, key) => {
+      const kept = before.get(key);
+      if (!kept) return;
+      const next = delegates.find(unit => unit.key === key);
+      const same = next ? [...next.emails].sort().join('|') === [...kept.emails].sort().join('|') : false;
+      if (!same) throw new Error('Wakil bagi ' + kept.name + ' tidak boleh diubah kerana unit itu telah mengundi.');
+    });
+
+    const updated = {
+      ...paper, delegates: JSON.stringify(delegates),
+      revision: Number(paper.revision) + 1, updatedAt: new Date(), updatedBy: email,
+    };
+    writeCirculationRecord_(table, paper._row, updated);
+    circulationLog_(book, {
+      id, committee: paper.committee, reference: paper.reference, unit: '(semua unit)',
+      action: 'Ubah wakil', before: circulationDelegateSummary_(before), after: circulationDelegateSummary_(delegates),
+      reason: '', by: email,
+    });
+    return adminPaper_(updated);
+  });
+}
+
+function circulationDelegateSummary_(units) {
+  const list = units instanceof Map ? [...units.values()] : units;
+  return list.map(unit => unit.name + ': ' + unit.emails.join(', ')).join(' | ').slice(0, 900);
+}
+
+/**
+ * Vote changes are official-record edits, so they are appended to a small log tab
+ * instead of silently replacing the representative's row.
+ */
+const CIRCULATION_LOG_TAB = 'Log Pengesahan Edaran';
+const CIRCULATION_LOG_HEADERS = ['Masa', 'ID Edaran', 'Jawatankuasa', 'Rujukan', 'Unit', 'Tindakan', 'Sebelum', 'Selepas', 'Sebab', 'Oleh'];
+
+function circulationLog_(book, entry) {
+  let sheet = book.getSheetByName(CIRCULATION_LOG_TAB);
+  if (!sheet) {
+    sheet = book.insertSheet(CIRCULATION_LOG_TAB);
+    sheet.appendRow(CIRCULATION_LOG_HEADERS);
+    sheet.getRange(1, 1, 1, CIRCULATION_LOG_HEADERS.length).setFontWeight('bold').setBackground('#104534').setFontColor('#ffffff');
+    sheet.setFrozenRows(1);
+  }
+  sheet.appendRow([
+    new Date(), entry.id, entry.committee, entry.reference, entry.unit,
+    entry.action, entry.before || '', entry.after || '', entry.reason || '', entry.by,
+  ]);
+  SpreadsheetApp.flush();
 }
 
 function saveCirculationDraft(form) {
@@ -69,7 +245,7 @@ function changeCirculationStatus(id, revision, action) {
     if (action === 'Terbit' && paper.status === 'Draf') {
       if (!paper.reference || !paper.summary || !paper.pdf || !(paper.deadline instanceof Date)
           || paper.deadline.getTime() <= Date.now()) {
-        throw new Error('Lengkapkan rujukan, perkara untuk pertimbangan, PDF dan tarikh tutup akan datang.');
+        throw new Error('Lengkapkan rujukan, perkara untuk pertimbangan, pautan dokumen dan tarikh tutup akan datang.');
       }
       const delegates = readCirculationDelegates_(paper);
       const roster = circulationRoster_(book, paper.committee);
@@ -114,6 +290,31 @@ function deleteCirculationDraft(id, revision) {
   });
 }
 
+/**
+ * Removes a circulation paper of any status, including a published paper with
+ * recorded votes. Reserved for the TDA PPS: the button is hidden from everyone
+ * else and the check below rejects the call regardless of the interface.
+ * The PDF in Drive is not touched; only the portal records are removed.
+ */
+function deleteCirculationPaper(id, revision) {
+  const {book, email} = requireMeetingTdaPps_();
+  id = circulationId_(id);
+  return circulationLocked_(() => {
+    const table = circulationSheet_(book, true);
+    const records = circulationRecords_(book);
+    const paper = findCirculationPaper_(records, id);
+    circulationRevision_(paper, revision);
+
+    const votes = records.filter(row => row.kind === 'UNDI' && row.id === id);
+    votes.sort((a, b) => b._row - a._row).forEach(row => table.deleteRow(row._row));
+    const current = findCirculationPaper_(circulationRecords_(book), id);
+    table.deleteRow(current._row);
+    SpreadsheetApp.flush();
+    console.log('Kertas edaran %s (%s) dipadam oleh %s; %s rekod undi dibuang.', id, paper.status, email, votes.length);
+    return {deleted: true, id, status: paper.status, votesRemoved: votes.length};
+  });
+}
+
 function exportCirculationVotesPdf(id) {
   const {book, email} = requireMeetingAdmin_();
   id = circulationId_(id);
@@ -145,7 +346,11 @@ function circulationVotesReportHtml_({paper, tally, votes, roster, generatedBy})
       + '<td class="tag">' + esc(decision) + '</td>'
       + '<td>' + (vote && vote.reason ? line(vote.reason) : '-') + '</td>'
       + '<td>' + (vote ? circulationFormatDate_(vote.createdAt) : '-') + '</td>'
-      + '<td>' + (vote ? esc(vote.name || '') + (vote.createdBy ? '<br><span class="muted">' + esc(vote.createdBy) + '</span>' : '') : '-') + '</td>'
+      + '<td>' + (vote ? esc(vote.name || '') + (vote.createdBy ? '<br><span class="muted">' + esc(vote.createdBy) + '</span>' : '') : '-')
+        + (vote && vote.updatedBy && vote.updatedBy !== vote.createdBy
+          ? '<br><span class="muted">Diubah oleh ' + esc(vote.updatedBy) + (vote.updatedAt instanceof Date ? ' · ' + circulationFormatDate_(vote.updatedAt) : '') + '</span>'
+          : '')
+        + '</td>'
       + '</tr>';
   }).join('');
 
@@ -185,7 +390,7 @@ function circulationVotesReportHtml_({paper, tally, votes, roster, generatedBy})
     + '<td><strong>' + tally.summary.waiting + '</strong>Belum mengundi</td>'
     + '</tr></table>'
     + '<h2>Maklum balas mengikut unit</h2>'
-    + '<table class="votes"><thead><tr><th>Unit</th><th>Wakil</th><th>Undi</th><th>Sebab bantahan</th><th>Masa direkod</th><th>Direkod oleh</th></tr></thead><tbody>'
+    + '<table class="votes"><thead><tr><th>Unit</th><th>Wakil</th><th>Undi</th><th>Sebab/ulasan bantahan atau cadangan pindaan</th><th>Masa direkod</th><th>Direkod oleh</th></tr></thead><tbody>'
     + (rows || '<tr><td colspan="6">Tiada unit edaran direkodkan.</td></tr>')
     + '</tbody></table>'
     + '<div class="footer">Dokumen ini dijana secara automatik daripada sistem UGS Meeting Management pada ' + circulationFormatDate_(new Date()) + ' MYT oleh ' + esc(generatedBy) + '. Rekod undian hendaklah disimpan sebagai bukti rasmi jawatankuasa.</div>'
@@ -239,7 +444,7 @@ function getCirculationPage(id) {
       context: paper.context, points: String(paper.summary).split('\n').map(line => line.trim()).filter(Boolean),
       isOpen: circulationIsOpen_(paper), label: circulationStatus_(paper),
       deadline: paper.deadline instanceof Date ? Utilities.formatDate(paper.deadline, MEETING_ZONE, 'dd/MM/yyyy · HH:mm') + ' MYT' : '',
-      pdfUrl: pdf?.view || '', previewUrl: pdf?.preview || '',
+      pdfUrl: pdf?.view || '', previewUrl: pdf?.preview || '', pdfKind: pdf?.kind || '',
       summary: tally.summary, unitStates: tally.unitStates.map(safeCirculationUnit_),
       options: options.map(safeCirculationUnit_),
     },
@@ -256,7 +461,9 @@ function submitCirculationVote(form) {
   const name = circulationText_(form?.name, 160, 'Nama penuh', true);
   if (meetingEmail_(form.email) !== email) throw new Error('Akaun UniSZA dalam borang tidak sepadan dengan sesi.');
   if (!['SOKONG', 'BANTAH'].includes(decision)) throw new Error('Pilih Sokong atau Bantah.');
-  const reason = decision === 'BANTAH' ? circulationText_(form.reason, 2000, 'Sebab bantahan', true) : '';
+  const reason = decision === 'BANTAH'
+    ? circulationText_(form.reason, 2000, 'Sebab/ulasan bantahan', true)
+    : circulationText_(form.reason, 2000, 'Cadangan pindaan');
 
   return circulationLocked_(() => {
     const records = circulationRecords_(book);
@@ -294,7 +501,7 @@ function submitCirculationVote(form) {
           'Unit: ' + unit.name,
           'Wakil: ' + name,
           'Undi: ' + decision,
-          ...(reason ? ['Sebab bantahan: ' + reason] : []),
+          ...(reason ? [(decision === 'BANTAH' ? 'Sebab/ulasan bantahan: ' : 'Cadangan pindaan: ') + reason] : []),
           'Masa Malaysia: ' + Utilities.formatDate(ballot.createdAt, MEETING_ZONE, 'dd/MM/yyyy HH:mm:ss'),
           'Rujukan undi: ' + ballot.voteId,
         ].join('\n'), {name: 'Urus Setia ' + paper.committee});
@@ -419,21 +626,47 @@ function circulationDeadline_(value) {
   return date;
 }
 
+/**
+ * A circulation paper may point at either a Google Drive PDF or a Microsoft 365
+ * document (OneDrive / SharePoint). A Word document is opened in the browser so
+ * members can review it and add comments or suggested changes in Word Online;
+ * Drive keeps the embedded preview that the portal already renders.
+ */
+const CIRCULATION_DOC_HOSTS = ['sharepoint.com', '1drv.ms', 'onedrive.live.com', 'onedrive.com'];
+
 function circulationPdf_(value) {
   const link = String(value || '').trim();
   const match = link.match(/^https:\/\/drive\.google\.com\/file\/d\/([a-z0-9_-]{15,})(?:\/(?:view|preview|edit))?\/?(?:\?.*)?$/i)
     || link.match(/^https:\/\/drive\.google\.com\/(?:open|uc)\?id=([a-z0-9_-]{15,})(?:&.*)?$/i);
-  if (!match) throw new Error('Gunakan pautan fail PDF daripada Google Drive.');
-  const resourceKey = link.match(/[?&]resourcekey=([a-z0-9_-]+)(?:&|$)/i)?.[1] || '';
-  const root = 'https://drive.google.com/file/d/' + match[1];
-  const suffix = resourceKey ? '?resourcekey=' + resourceKey : '';
-  return {id: match[1], resourceKey, view: root + '/view' + suffix, preview: root + '/preview' + suffix};
+  if (match) {
+    const resourceKey = link.match(/[?&]resourcekey=([a-z0-9_-]+)(?:&|$)/i)?.[1] || '';
+    const root = 'https://drive.google.com/file/d/' + match[1];
+    const suffix = resourceKey ? '?resourcekey=' + resourceKey : '';
+    return {kind: 'drive', id: match[1], resourceKey, view: root + '/view' + suffix, preview: root + '/preview' + suffix};
+  }
+  const onedrive = circulationOneDrivePdf_(link);
+  if (onedrive) return {kind: 'onedrive', id: '', resourceKey: '', view: onedrive, preview: ''};
+  throw new Error('Gunakan pautan Google Drive (PDF) atau pautan OneDrive/SharePoint (Word).');
+}
+
+// Only Microsoft 365 hosts are accepted, so a paper can never point voters at an
+// unrelated site. The share link is stored exactly as supplied: the tenant sets
+// the sharing scope, and stripping query parameters can invalidate it.
+// Parsed with a regex because the Apps Script runtime has no WHATWG URL object.
+function circulationOneDrivePdf_(link) {
+  const match = link.match(/^https:\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+)(?::\d+)?(?:[/?#]|$)/i);
+  if (!match) return '';
+  const host = match[1].toLowerCase();
+  return CIRCULATION_DOC_HOSTS.some(domain => host === domain || host.endsWith('.' + domain)) ? link : '';
 }
 
 function verifyCirculationPdf_(value) {
   const pdf = circulationPdf_(value);
+  // OneDrive sharing lives outside Google Drive, so only the link shape can be
+  // checked here; members open the document with their UniSZA Microsoft 365 account.
+  if (pdf.kind === 'onedrive') return pdf;
   const file = pdf.resourceKey ? DriveApp.getFileByIdAndResourceKey(pdf.id, pdf.resourceKey) : DriveApp.getFileById(pdf.id);
-  if (file.getMimeType() !== 'application/pdf') throw new Error('Pautan ini mesti merujuk fail PDF.');
+  if (file.getMimeType() !== 'application/pdf') throw new Error('Pautan Google Drive ini mesti merujuk fail PDF.');
   return pdf;
 }
 

@@ -6,7 +6,7 @@ const {randomUUID} = require('node:crypto');
 const {test} = require('node:test');
 
 const directory = path.join(__dirname, '..', 'gas');
-const source = ['Code.js', 'QuorumService.js', 'PortalService.js', 'MeetingAccess.js', 'CirculationService.js']
+const source = ['Code.js', 'QuorumService.js', 'PortalService.js', 'MeetingAccess.js', 'CirculationService.js', 'AdminService.js']
   .map(file => fs.readFileSync(path.join(directory, file), 'utf8')).join('\n');
 const rosterHeaders = ['Bil', 'Nama', 'Jawatan', 'Fakulti / Pusat / Institut', 'Emel', 'Tarikh Lantikan', 'Tarikh Tamat', 'Status Keahlian'];
 const admin = 'admin@unisza.edu.my';
@@ -246,7 +246,7 @@ test('one vote per unit, mandatory objection reason, receipt and duplicate retry
   state.user = japsuMember;
   assert.throws(() => vote({unit: secondFaculty}), /tiada mandat/);
   assert.throws(() => vote({email: alternate}), /tidak sepadan/);
-  assert.throws(() => vote({vote: 'BANTAH'}), /Sebab bantahan/);
+  assert.throws(() => vote({vote: 'BANTAH'}), /Sebab\/ulasan bantahan/);
   const submission = {vote: 'BANTAH', reason: '=teks semakan', receipt: true, requestId: randomUUID()};
   const cast = vote(submission);
   assert.equal(cast.receipt, 'DIHANTAR');
@@ -279,4 +279,60 @@ test('revocation, deadline and closing stop new votes', () => {
   assert.equal(methods.changeCirculationStatus(paperId, 2, 'Tutup').status, 'Ditutup');
   state.user = japsuMember;
   assert.equal(methods.getCirculationPage(paperId).current.isOpen, false);
+});
+
+test('a supporting vote may carry an optional amendment suggestion', () => {
+  const {methods, state, draft, publish, vote} = testEnvironment();
+  draft();
+  publish();
+  state.user = japsuMember;
+  vote({vote: 'SOKONG', reason: '   '});
+  state.user = otherFaculty;
+  vote({unit: secondFaculty, vote: 'SOKONG', reason: 'Tambah lampiran jadual semester.'});
+  state.user = admin;
+  const {units} = methods.getCirculationVotes(paperId);
+  const supporting = units.find(unit => unit.key === faculty.toLowerCase());
+  const amended = units.find(unit => unit.key === secondFaculty.toLowerCase());
+  assert.equal(supporting.vote, 'SOKONG');
+  assert.equal(supporting.reason, '');
+  assert.equal(amended.reason, 'Tambah lampiran jadual semester.');
+  assert.equal(methods.getCirculationVotes(paperId).summary.support, 2);
+});
+
+test('the TDA PPS may correct a faculty vote while the poll is open', () => {
+  const {methods, data, state, draft, publish, vote} = testEnvironment();
+  const tda = 'fathurrahman@unisza.edu.my';
+  data['Ahli PPS'].push([2, 'TDA PPS', 'Timbalan Dekan (Akademik)', 'Pusat Pengajian Siswazah', tda]);
+  draft();
+  publish();
+  state.user = japsuMember;
+  vote({vote: 'SOKONG'});
+
+  state.user = admin;
+  assert.throws(() => methods.overrideCirculationVote(paperId, faculty, 'BANTAH', 'ujian'), /TDA PPS/);
+
+  state.user = tda;
+  const {paper} = methods.getCirculationVotes(paperId);
+  assert.equal(methods.getCirculationVotes(paperId).canOverride, true);
+  assert.throws(() => methods.overrideCirculationVote(paperId, faculty, 'SOKONG', 'sama'), /sudah SOKONG/);
+  assert.throws(() => methods.overrideCirculationVote(paperId, faculty, 'BANTAH', '  '), /Sebab perubahan/);
+
+  const corrected = methods.overrideCirculationVote(paperId, faculty, 'BANTAH', 'Keputusan fakulti berbeza dengan wakil.');
+  const unit = corrected.units.find(entry => entry.key === faculty.toLowerCase());
+  assert.equal(unit.vote, 'BANTAH');
+  assert.equal(unit.changedBy, tda);
+  assert.equal(corrected.summary.oppose, 1);
+  assert.equal(data['Log Pengesahan Edaran'].length, 2);
+
+  // A unit that has voted keeps the representatives it voted with.
+  assert.throws(() => methods.saveCirculationDelegates(paperId, paper.revision, [
+    {unit: faculty, email: alternate}, {unit: secondFaculty, email: otherFaculty},
+  ]), /tidak boleh diubah/);
+
+  state.user = admin;
+  assert.equal(methods.changeCirculationStatus(paperId, paper.revision, 'Tutup').status, 'Ditutup');
+  const closed = methods.getCirculationVotes(paperId).paper.revision;
+  state.user = tda;
+  assert.throws(() => methods.overrideCirculationVote(paperId, faculty, 'SOKONG', 'selepas tutup'), /semasa undian dibuka/);
+  assert.equal(methods.getCirculationVotes(paperId).paper.revision, closed);
 });

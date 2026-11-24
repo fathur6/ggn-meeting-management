@@ -157,15 +157,93 @@ Use ISO dates (`YYYY-MM-DD`). New members should be created with `Status Keahlia
 
 JKPS quorum, meeting calls, and annual attendance exclude `Lepas` members from new meetings. Historical attendance remains intact. `seedCurrentMemberships()` now uses each JKPS member's `Tarikh Lantikan` when populating the annual-report history.
 
+## Portal administrators
+
+Portal access is the `Ahli PPS` tab of the official workbook: an active row whose
+email is `@unisza.edu.my` may open the management pages. The `Jawatan` column holds
+the role code shown in the portal:
+
+| Role | Meaning |
+| --- | --- |
+| `TDA_PPS` | Timbalan Dekan (Akademik), PPS |
+| `PPA` | Penyelaras Program Akademik, PPS |
+| `PJK` | Penyelaras Jaminan Kualiti, PPS |
+| `PP` | Pegawai Tadbir (Akademik), PPS |
+
+**Committee Members → Committee: Admin** opens *Pentadbir sistem*, the roster of
+administrators. Only the TDA PPS may add, edit or withdraw an administrator; other
+administrators see the list read-only. Withdrawing access archives the row
+(`Tarikh Tamat` = today, `Status Keahlian` = `Lepas`) instead of deleting it, and an
+account cannot withdraw its own access.
+
+Rows whose `Jawatan` is still a free-text title (for example `Dekan`) are displayed
+as they are. Editing such a row offers **Kekalkan: \<title\>** so saving does not
+overwrite the title; choose a role code only when the post really is one of the
+three roles above.
+
+The TDA PPS allowlist lives in `MEETING_TDA_PPS_EMAILS` (`gas/MeetingAccess.js`).
+Add an email there to appoint another TDA PPS. Every reserved action is checked on
+the server, so hiding a button is convenience only:
+
+- **Padam** on *Senarai kertas edaran* (`deleteCirculationPaper`) — removes a paper
+  of any status, including a published one, together with its vote rows. The PDF in
+  Google Drive is left untouched. Other administrators keep the draft-only `Buang`.
+- **Tambah pentadbir / Edit / Buang** on *Pentadbir sistem*.
+
 
 ## Pengesahan Edaran
 
 1. In the official spreadsheet, set General access to **Restricted** and review direct shares. Give edit access only to trusted PPS staff because the workbook contains `Ahli PPS`, authorization rosters and votes. The application checks the workbook's general sharing setting before processing requests.
 2. As a member of **Ahli PPS**, open the deployed web app with `?view=app` and choose **Pengesahan Edaran → Kertas baharu**.
-3. Choose JKPS or JAPSU. Enter the circulation reference, proposal title, committee information, matters for consideration, Google Drive PDF link and the closing time in Malaysia. Confirm the voting representatives against the selected committee's live roster. Each selected faculty, institute or approved centre gets one vote even when multiple delegates are approved. Centres outside the default faculty/institute rule are listed in `CIRCULATION_EXTRA_UNITS` in `CirculationService.gs`.
-4. Save the draft and choose **Terbitkan**. Google Drive controls who can open the PDF. A directly shared file or a reviewer-readable link both work. Check that the intended readers can open it. Publishing requires a reference, summary, valid PDF, a future deadline, and at least one unit. The draft becomes read-only after publication. The admin can close voting early, and the deadline stops further responses. The admin list also provides **Muat turun PDF** for a timestamped evidence report of the current tally and **Buang** for a draft that has not been published. Published papers cannot be deleted.
+3. Choose JKPS or JAPSU. Enter the circulation reference, proposal title, committee information, matters for consideration, the Google Drive or OneDrive/SharePoint document link and the closing time in Malaysia. Confirm the voting representatives against the selected committee's live roster. Each selected faculty, institute or approved centre gets one vote even when multiple delegates are approved. Centres outside the default faculty/institute rule are listed in `CIRCULATION_EXTRA_UNITS` in `CirculationService.js`.
+4. Save the draft and choose **Terbitkan**. Google Drive controls who can open the PDF. A directly shared file or a reviewer-readable link both work. Check that the intended readers can open it. Publishing requires a reference, summary, valid PDF, a future deadline, and at least one unit. The draft becomes read-only after publication. The admin can close voting early, and the deadline stops further responses. The admin list also provides **Muat turun PDF** for a timestamped evidence report of the current tally, **Wakil & undian** to review the seat holders and decisions, and **Padam** for the TDA PPS only, which removes a paper of any status together with its votes and writes an audit entry.
 5. Copy the generated link for email or WhatsApp. It opens a standalone member page for this paper. A representative who needs to sign in or switch accounts can select **Pilih akaun Google UniSZA** to use Google's account chooser and return to the same paper; see [Google sign-in and access control](#google-sign-in-and-access-control). The relevant committee's active roster can view the circulation and tally. The chosen representatives can vote for their unit. A person's current membership and unit are checked again when they vote. Admin authorization comes from `Ahli PPS`, including when an admin is also a committee member.
-6. The application creates **Pengesahan Edaran** in the official spreadsheet on the first draft save. The one tab holds `KERTAS` and `UNDI` records. It retains the draft revision, published representatives, vote, reason for objection, verified voter email, timestamps and email status. The member page returns unit-level results and the viewer's own voting options. It keeps individual voting records in the spreadsheet.
+6. The application creates **Pengesahan Edaran** in the official spreadsheet on the first draft save. The one tab holds `KERTAS` and `UNDI` records. It retains the draft revision, published representatives, vote, the reason/opinion for an objection or the optional amendment suggestion, verified voter email, timestamps and email status. The member page returns unit-level results and the viewer's own voting options. It keeps individual voting records in the spreadsheet.
+
+## Paper documents (Google Drive and OneDrive)
+
+The *Pautan dokumen* field accepts two link types, checked by `circulationPdf_`:
+
+| Link | Behaviour |
+| --- | --- |
+| `drive.google.com/file/d/…` | Verified with `DriveApp` (must be a PDF) and previewed inside the portal |
+| `*.sharepoint.com`, `1drv.ms`, `onedrive.live.com`, `onedrive.com` | Opened in a new tab so members can comment and suggest changes in Word Online |
+
+A Microsoft 365 link cannot be verified server-side: sharing scope is set in
+SharePoint/OneDrive and the Apps Script runs as the deployment owner. Only the host
+is validated, so a paper can never point voters at an unrelated site, and the link
+is stored exactly as supplied. The committee must share the document with the
+selected members before the paper is published.
+
+Only `https` links are accepted. A OneDrive/SharePoint paper still requires the
+same review fields (reference, points for consideration, deadline) before it can be
+published, and the vote evidence PDF is generated by the app either way.
+
+## One vote per faculty, representatives and corrections
+
+A voting unit is a faculty, institute or centre. Several representatives may hold
+the seat and **any of them may cast the unit's vote**; the first vote recorded wins
+and the rest are told the unit has already voted. The tally counts one vote per
+unit, never one per person.
+
+**Wakil & undian** on a published paper opens the panel that shows, per unit, who
+holds the seat, how the unit voted, and who recorded it.
+
+The ballot asks for text that matches the decision: an objection requires
+**Sebab/ulasan bantahan**, while a supporting vote may add an optional **Cadangan
+Pindaan (Jika ada)**. Both are kept with the vote and shown in the evidence PDF and
+in the *Wakil & undian* panel.
+
+- **Change representatives** — allowed while the poll is open, and only for units
+  that have not voted. A unit that already voted keeps the representatives it voted
+  with, so the record can never be rewritten underneath a recorded decision.
+- **Override a decision** — the TDA PPS only, while the poll is open, and only with
+  a written reason. The representative's original record is replaced on the row
+  (`updatedBy`/`updatedAt`) and every change is appended to **Log Pengesahan
+  Edaran**, so the evidence PDF shows who changed the faculty's vote and when.
+
+Both checks run on the server, so hiding a control is convenience only.
+
 
 ### Deployment verification
 
@@ -175,7 +253,7 @@ Run the local authorization and voting checks with `node --test tests/circulatio
 - As a plain committee member, verify the administration page and management API reject access. Check that a draft and another committee's circulation are inaccessible.
 - Publish a test paper with a PDF shared with the intended readers. Verify the PDF, support and objection paths, required objection reason, receipt, unit tally, repeated submission and voting cutoff.
 - Download the vote evidence PDF and verify that it includes the current tally, every unit, the recorded vote or **Belum mengundi**, and a timestamped filename.
-- Create a temporary draft, click **Buang**, and confirm the row disappears. A published paper must not offer the delete action.
+- Create a temporary draft, click **Buang**, and confirm the row disappears. As a non-TDA account, confirm **Padam** is absent and the delete RPC is rejected; as the TDA PPS, delete a published test paper and check the **Log Pengesahan Edaran** entry.
 - Verify the separately configured eMeeting sync extension still records attendance. Use a prior version of the deployment as the rollback point.
 
 A deployment account from outside UniSZA or a Workspace policy that hides the active email will cause sign-in checks to fail. Test the actual `/exec` link with a representative's Google Workspace account. [Apps Script session documentation](https://developers.google.com/apps-script/reference/base/session)

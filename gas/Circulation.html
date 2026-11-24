@@ -179,7 +179,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--green); }
         </div>
         <div class="paper-actions">
           <button class="btn btn-primary" id="voteBtn" type="button">Undi sebagai wakil</button>
-          <button class="btn btn-outline" id="pdfBtn" type="button">Lihat kertas (PDF)</button>
+          <button class="btn btn-outline" id="pdfBtn" type="button">Lihat kertas</button>
         </div>
       </article>
       <section class="card" aria-labelledby="unitHeading">
@@ -211,7 +211,7 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--green); }
           <label class="choice negative"><input type="radio" name="decision" value="BANTAH" required> Bantah</label>
         </div>
       </fieldset>
-      <label class="field" id="reasonRow" hidden>Sebab bantahan<textarea id="voteReason" rows="3" maxlength="2000"></textarea></label>
+      <label class="field" id="reasonRow" hidden><span id="reasonLabel">Sebab/ulasan bantahan</span><textarea id="voteReason" rows="3" maxlength="2000"></textarea></label>
       <label class="checkbox"><input id="voteReceipt" type="checkbox"> Emelkan saya maklum balas ini</label>
       <p class="form-note" id="receiptNote">Satu undi diterima bagi setiap unit untuk kertas ini.</p>
       <p id="ballotError" class="notice error" role="alert" hidden></p>
@@ -220,9 +220,9 @@ input[type="radio"], input[type="checkbox"] { accent-color: var(--green); }
   </div>
 </dialog>
 <dialog id="paperDialog" aria-labelledby="previewHeading">
-  <div class="dialog-head"><h2 id="previewHeading">Kertas cadangan (PDF)</h2><button class="close" aria-label="Tutup paparan PDF" type="button" data-close="paperDialog">×</button></div>
+  <div class="dialog-head"><h2 id="previewHeading">Kertas cadangan</h2><button class="close" aria-label="Tutup paparan kertas" type="button" data-close="paperDialog">×</button></div>
   <iframe id="paperFrame" title="Paparan kertas cadangan"></iframe>
-  <div class="dialog-body"><a id="pdfLink" target="_blank" rel="noopener noreferrer">Buka PDF dalam tab baharu ↗</a></div>
+  <div class="dialog-body"><a id="pdfLink" target="_blank" rel="noopener noreferrer">Buka dokumen dalam tab baharu ↗</a></div>
 </dialog>
 <script>
 const $ = id => document.getElementById(id);
@@ -283,6 +283,7 @@ function paint() {
   $('deadlineRow').hidden = !current.deadline;
   $('deadline').textContent = current.deadline;
   $('pdfBtn').disabled = !current.pdfUrl;
+  $('pdfBtn').textContent = current.previewUrl ? 'Lihat kertas (PDF)' : 'Buka dokumen & cadangan ↗';
   const available = current.options.some(unit => !unit.vote);
   $('voteBtn').disabled = !current.isOpen || !available;
   const voteNote = current.isOpen && !available
@@ -328,9 +329,16 @@ function showBallot() {
   $('ballot').showModal();
 }
 function updateReason() {
-  const dissent = $('voteForm').elements.decision.value === 'BANTAH';
-  $('reasonRow').hidden = !dissent;
+  const decision = $('voteForm').elements.decision.value;
+  const dissent = decision === 'BANTAH';
+  // A representative who supports may still propose an amendment; a representative
+  // who objects must state why.
+  $('reasonRow').hidden = !decision;
   $('voteReason').required = dissent;
+  $('reasonLabel').textContent = dissent ? 'Sebab/ulasan bantahan' : 'Cadangan Pindaan (Jika ada)';
+  $('voteReason').placeholder = dissent
+    ? 'Nyatakan sebab atau ulasan bantahan — termasuk cadangan penambahbaikan.'
+    : 'Cadangan pindaan atau penambahbaikan — tidak wajib.';
 }
 async function sendVote(event) {
   event.preventDefault();
@@ -365,6 +373,13 @@ async function sendVote(event) {
 }
 function openPaper() {
   const paper = state.dashboard.current;
+  if (!paper || !paper.pdfUrl) return;
+  // A Word document in OneDrive/SharePoint cannot be framed, and members need the
+  // full editor to leave comments or suggestions, so open it in a new tab.
+  if (!paper.previewUrl) {
+    window.open(paper.pdfUrl, '_blank', 'noopener');
+    return;
+  }
   $('paperFrame').src = paper.previewUrl;
   $('pdfLink').href = paper.pdfUrl;
   $('paperDialog').showModal();
