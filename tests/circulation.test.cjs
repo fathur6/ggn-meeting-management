@@ -6,7 +6,7 @@ const {randomUUID} = require('node:crypto');
 const {test} = require('node:test');
 
 const directory = path.join(__dirname, '..', 'gas');
-const source = ['Code.js', 'QuorumService.gs', 'PortalService.gs', 'MeetingAccess.gs', 'CirculationService.gs']
+const source = ['Code.js', 'QuorumService.js', 'PortalService.js', 'MeetingAccess.js', 'CirculationService.js']
   .map(file => fs.readFileSync(path.join(directory, file), 'utf8')).join('\n');
 const rosterHeaders = ['Bil', 'Nama', 'Jawatan', 'Fakulti / Pusat / Institut', 'Emel', 'Tarikh Lantikan', 'Tarikh Tamat', 'Status Keahlian'];
 const admin = 'admin@unisza.edu.my';
