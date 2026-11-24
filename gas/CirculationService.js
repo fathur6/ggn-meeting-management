@@ -563,9 +563,15 @@ function circulationAccess_(id) {
   const records = circulationRecords_(book);
   const paper = findCirculationPaper_(records, circulationId_(id));
   const roster = circulationRoster_(book, paper.committee);
-  const member = roster.some(member => member.email === email);
-  if ((!member || paper.status === 'Draf') && !meetingAdmin_(book, email)) {
-    throw new MeetingAccountError_('Edaran ini dikhaskan untuk ahli aktif ' + paper.committee + '. Semak akaun UniSZA yang sedang digunakan.');
+  // Viewing stays with the paper's own committee; a delegate from another roster
+  // (Ahli JKPS) may open the paper once they are seated on it. Candidates come from
+  // the union roster so a JKPS member can be seated.
+  const committeeMember = meetingRoster_(book, 'Ahli ' + paper.committee).some(member => member.email === email);
+  const seated = readCirculationDelegates_(paper).some(unit => unit.emails.includes(email));
+  if ((!committeeMember && !seated) || paper.status === 'Draf') {
+    if (!meetingAdmin_(book, email)) {
+      throw new MeetingAccountError_('Edaran ini dikhaskan untuk ahli aktif ' + paper.committee + '. Semak akaun UniSZA yang sedang digunakan.');
+    }
   }
   return {paper, records, roster, email};
 }
@@ -575,8 +581,24 @@ function circulationCommittee_(committee) {
   return committee;
 }
 
+/**
+ * Voting candidates come from the paper's own committee roster plus the JKPS
+ * roster in the same workbook, so a faculty can be represented by its JKPS
+ * member (deputy dean, coordinator) as well as its own committee delegate.
+ * The committee roster wins when the same person appears in both.
+ */
 function circulationRoster_(book, committee) {
-  return meetingRoster_(book, 'Ahli ' + circulationCommittee_(committee));
+  const primary = meetingRoster_(book, 'Ahli ' + circulationCommittee_(committee));
+  if (String(committee).toUpperCase() === 'JKPS') return primary;
+  let secondary = [];
+  try {
+    secondary = meetingRoster_(book, 'Ahli JKPS');
+  } catch (_) {
+    // A workbook without the JKPS tab keeps working with its committee roster.
+    return primary;
+  }
+  const seen = new Set(primary.map(member => member.email));
+  return primary.concat(secondary.filter(member => !seen.has(member.email)));
 }
 
 // Faculties and institutes vote by default. Selected centres may also hold one

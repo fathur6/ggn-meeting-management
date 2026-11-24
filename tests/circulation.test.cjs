@@ -395,3 +395,26 @@ test('a Dean cannot be overruled by a later representative vote', () => {
   assert.equal(summary.support, 1);
   assert.equal(summary.oppose, 0);
 });
+
+test('candidates include JKPS members as well as the paper committee', () => {
+  const {methods, state, draft, publish, vote} = testEnvironment();
+  state.user = admin;
+  const candidates = methods.getCirculationCandidates('JAPSU');
+  assert.equal(candidates.some(member => member.email === jkpsMember), true, 'JKPS member offered');
+  assert.equal(candidates.some(member => member.email === japsuMember), true, 'committee member offered');
+  assert.equal(methods.getCirculationCandidates('JKPS').some(member => member.email === japsuMember), false);
+
+  draft({candidates: [
+    {email: japsuMember, unit: faculty},
+    {email: jkpsMember, unit: faculty},
+    {email: otherFaculty, unit: secondFaculty},
+  ]});
+  publish();
+  state.user = jkpsMember;
+  assert.ok(vote({vote: 'SOKONG'}).id);
+  state.user = admin;
+  const unit = methods.getCirculationVotes(paperId).units.find(entry => entry.key === faculty.toLowerCase());
+  assert.equal(unit.emails.includes(jkpsMember), true);
+  assert.equal(unit.vote, 'SOKONG');
+  assert.equal(unit.votedBy, jkpsMember);
+});
